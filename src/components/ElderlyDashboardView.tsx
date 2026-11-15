@@ -28,6 +28,7 @@ import {
 } from '../services/careService';
 import type { AppSection, Appointment, Medication, MedicationLog } from '../types/healthcare';
 import { CareAssistantPanel } from './CareAssistantPanel';
+import { HealthOverviewSection } from './HealthOverviewSection';
 import { Modal } from './ui/Modal';
 
 interface ElderlyDashboardViewProps {
@@ -542,6 +543,9 @@ export function ElderlyDashboardView({ onNavigate }: ElderlyDashboardViewProps) 
           )}
         </section>
       </div>
+
+      {/* 3a. Simple Health Overview */}
+      <HealthOverviewSection onNavigate={onNavigate} />
 
       {/* 3b. Simple Care Routine Assistant */}
       <CareAssistantPanel />

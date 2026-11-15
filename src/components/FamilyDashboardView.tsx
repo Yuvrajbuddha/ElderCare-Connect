@@ -1,32 +1,17 @@
 import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
-  BarChart3,
   Calendar,
   Check,
-  Lock,
   MessageSquare,
   Phone,
-  Pill,
   Send,
   Sparkles,
-  Users,
 } from 'lucide-react';
-import {
-  Bar,
-  CartesianGrid,
-  ComposedChart,
-  Line,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts';
 import { useCare } from '../context/CareContext';
 import {
   formatDateDisplay,
   formatTime12h,
-  getOffsetDateKey,
   getTodayKey,
   parseReadableError,
 } from '../lib/utils';
@@ -42,19 +27,12 @@ import type {
   Medication,
   MedicationLog,
 } from '../types/healthcare';
+import { HealthOverviewSection } from './HealthOverviewSection';
 import { Modal } from './ui/Modal';
 import { StatusText } from './ui/StatusText';
 
 interface FamilyDashboardViewProps {
   onNavigate: (section: AppSection) => void;
-}
-
-interface AdherencePoint {
-  dayLabel: string;
-  fullDate: string;
-  taken: number;
-  skipped: number;
-  adherencePct: number;
 }
 
 function parseTimeToMinutes(hhmm: string): number | null {
@@ -78,7 +56,6 @@ export function FamilyDashboardView({ onNavigate }: FamilyDashboardViewProps) {
     activeCircleDataError,
     firebaseUser,
     profile,
-    members,
     currentMember,
     isCircleOwner,
     can,
@@ -86,14 +63,11 @@ export function FamilyDashboardView({ onNavigate }: FamilyDashboardViewProps) {
     medicationLogs,
     appointments,
     healthRecords,
-    routines,
-    routineLogs,
     messages,
     unreadNotificationCount,
     pushToast,
   } = useCare();
 
-  const [chartWindow, setChartWindow] = useState<'weekly' | 'monthly'>('weekly');
   const [busyDoseKey, setBusyDoseKey] = useState<string | null>(null);
 
   // Dialogs
@@ -155,35 +129,6 @@ export function FamilyDashboardView({ onNavigate }: FamilyDashboardViewProps) {
     return { total, taken, missed, overdue, skipped, pct };
   }, [todayDoses]);
 
-  const chartSeries: AdherencePoint[] = useMemo(() => {
-    if (!canViewMedications || !canViewAdherenceReports) return [];
-    const days = chartWindow === 'weekly' ? 7 : 30;
-    const expectedPerDay = activeMeds.reduce((sum, m) => sum + m.scheduledTimes.length, 0);
-    const list: AdherencePoint[] = [];
-
-    for (let i = days - 1; i >= 0; i -= 1) {
-      const dk = getOffsetDateKey(-i);
-      const dayLogs = medicationLogs.filter((l) => l.dateKey === dk);
-      const taken = dayLogs.filter((l) => l.status === 'taken').length;
-      const skipped = dayLogs.filter((l) => l.status === 'skipped' || l.status === 'missed').length;
-      const expected = Math.max(expectedPerDay, taken + skipped);
-      const pct = expected > 0 ? Math.min(100, Math.round((taken / expected) * 100)) : 0;
-      const [y, m, d] = dk.split('-').map(Number);
-      const dt = new Date(y, m - 1, d);
-      list.push({
-        dayLabel:
-          days === 7
-            ? dt.toLocaleDateString('en-US', { weekday: 'short' })
-            : `${dt.getMonth() + 1}/${dt.getDate()}`,
-        fullDate: dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        taken,
-        skipped,
-        adherencePct: pct,
-      });
-    }
-    return list;
-  }, [canViewMedications, canViewAdherenceReports, chartWindow, activeMeds, medicationLogs]);
-
   const upcomingAppointments = useMemo(() => {
     if (!canViewAppointments) return [];
     return appointments
@@ -194,11 +139,6 @@ export function FamilyDashboardView({ onNavigate }: FamilyDashboardViewProps) {
         ),
       );
   }, [canViewAppointments, appointments, todayKey]);
-
-  const caretakers = useMemo(
-    () => members.filter((m) => m.memberRole === 'caretaker'),
-    [members],
-  );
 
   if (!activeCircle || !firebaseUser || !profile) return null;
 
@@ -340,6 +280,16 @@ export function FamilyDashboardView({ onNavigate }: FamilyDashboardViewProps) {
                 <span>Emergency Call</span>
               </a>
             )}
+            {canViewAdherenceReports && (
+              <button
+                type="button"
+                onClick={handleGenerateAiSummary}
+                className="inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-[#065F46] bg-[#ECFDF5] px-4 text-sm font-semibold text-[#065F46] hover:bg-[#D1FAE5]"
+              >
+                <Sparkles className="h-4 w-4" />
+                <span>AI Summary</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setMessageModalOpen(true)}
@@ -378,147 +328,8 @@ export function FamilyDashboardView({ onNavigate }: FamilyDashboardViewProps) {
         </section>
       )}
 
-      {/* 2. Two Simple Summary Cards */}
-      <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <div className="rounded-2xl border border-[#E5E7EB] bg-white p-5">
-          <div className="flex items-center justify-between text-sm font-medium text-[#6B7280]">
-            <span>Today&apos;s Medicines</span>
-            <Pill className="h-5 w-5 text-[#065F46]" />
-          </div>
-          {canViewMedications ? (
-            <>
-              <p className="font-mono mt-2 text-3xl font-bold text-[#1F2937] tabular-nums">
-                {todayStats.taken}/{todayStats.total}
-              </p>
-              <p className="mt-1 text-sm text-[#4B5563]">{todayStats.pct}% taken today</p>
-            </>
-          ) : (
-            <p className="mt-3 text-sm text-[#6B7280]">Access not shared</p>
-          )}
-        </div>
-
-        <div className="rounded-2xl border border-[#E5E7EB] bg-white p-5">
-          <div className="flex items-center justify-between text-sm font-medium text-[#6B7280]">
-            <span>Care Team</span>
-            <Users className="h-5 w-5 text-[#065F46]" />
-          </div>
-          <p className="font-mono mt-2 text-3xl font-bold text-[#1F2937] tabular-nums">
-            {members.length}
-          </p>
-          <p className="mt-1 truncate text-sm text-[#4B5563]">
-            {caretakers.length > 0
-              ? `Caretaker: ${caretakers.map((c) => c.displayName.split(' ')[0]).join(', ')}`
-              : 'Family members connected'}
-          </p>
-        </div>
-      </section>
-
-      {/* 3. Medication Adherence Chart */}
-      <section className="rounded-2xl border border-[#E5E7EB] bg-white p-6">
-        <div className="flex flex-col justify-between gap-3 border-b border-[#E5E7EB] pb-4 sm:flex-row sm:items-center">
-          <div className="flex items-center gap-2.5">
-            <BarChart3 className="h-5 w-5 text-[#065F46]" />
-            <div>
-              <h2 className="font-display text-lg font-bold text-[#1F2937]">
-                Medicine Adherence Report
-              </h2>
-              <p className="text-sm text-[#6B7280]">
-                Daily doses taken vs. skipped over the last {chartWindow === 'weekly' ? '7 days' : '30 days'}.
-              </p>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="inline-flex rounded-xl bg-[#F3F4F6] p-1">
-              <button
-                type="button"
-                onClick={() => setChartWindow('weekly')}
-                className={`min-h-[38px] rounded-lg px-3.5 text-xs font-semibold ${
-                  chartWindow === 'weekly' ? 'bg-white text-[#065F46] shadow-sm' : 'text-[#4B5563]'
-                }`}
-              >
-                7 Days
-              </button>
-              <button
-                type="button"
-                onClick={() => setChartWindow('monthly')}
-                className={`min-h-[38px] rounded-lg px-3.5 text-xs font-semibold ${
-                  chartWindow === 'monthly' ? 'bg-white text-[#065F46] shadow-sm' : 'text-[#4B5563]'
-                }`}
-              >
-                30 Days
-              </button>
-            </div>
-
-            {canViewAdherenceReports && (
-              <button
-                type="button"
-                onClick={handleGenerateAiSummary}
-                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-[#065F46] bg-[#ECFDF5] px-4 text-xs font-bold text-[#065F46] hover:bg-[#D1FAE5]"
-              >
-                <Sparkles className="h-4 w-4" />
-                <span>AI Summary</span>
-              </button>
-            )}
-          </div>
-        </div>
-
-        {!canViewMedications || !canViewAdherenceReports ? (
-          <div className="py-10 text-center">
-            <Lock className="mx-auto h-6 w-6 text-[#6B7280]" />
-            <p className="mt-2 text-sm text-[#6B7280]">
-              Adherence charts require permission from {activeCircle.patientName}.
-            </p>
-          </div>
-        ) : activeMeds.length === 0 ? (
-          <div className="py-10 text-center text-sm text-[#6B7280]">
-            No active medicines scheduled yet.
-          </div>
-        ) : (
-          <div className="mt-5 h-[240px] w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={chartSeries} margin={{ top: 8, right: 10, left: -16, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" vertical={false} />
-                <XAxis
-                  dataKey="dayLabel"
-                  tick={{ fill: '#6B7280', fontSize: 12 }}
-                  axisLine={{ stroke: '#E5E7EB' }}
-                  tickLine={false}
-                  interval={chartWindow === 'monthly' ? 4 : 0}
-                />
-                <YAxis
-                  yAxisId="doses"
-                  allowDecimals={false}
-                  tick={{ fill: '#6B7280', fontSize: 12 }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <YAxis
-                  yAxisId="pct"
-                  orientation="right"
-                  domain={[0, 100]}
-                  unit="%"
-                  tick={{ fill: '#065F46', fontSize: 12 }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <Tooltip />
-                <Bar yAxisId="doses" dataKey="taken" stackId="a" fill="#065F46" name="Taken" maxBarSize={28} />
-                <Bar yAxisId="doses" dataKey="skipped" stackId="a" fill="#B91C1C" name="Skipped" maxBarSize={28} />
-                <Line
-                  yAxisId="pct"
-                  type="monotone"
-                  dataKey="adherencePct"
-                  stroke="#0D9488"
-                  strokeWidth={2.5}
-                  dot={chartWindow === 'weekly'}
-                  name="Adherence %"
-                />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-      </section>
+      {/* 2. Simple Health Overview (cards, progress indicators, weekly adherence, upcoming appointments, recent activities) */}
+      <HealthOverviewSection onNavigate={onNavigate} />
 
       {/* 4. Today's Schedule & Upcoming Visits (2 Clean Columns) */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
