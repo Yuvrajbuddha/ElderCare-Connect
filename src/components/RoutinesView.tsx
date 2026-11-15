@@ -28,6 +28,7 @@ export function RoutinesView() {
     activeCircleDataLoading,
     firebaseUser,
     profile,
+    currentMember,
     routines,
     routineLogs,
     pushToast,
@@ -51,6 +52,9 @@ export function RoutinesView() {
   }, [routines, categoryFilter]);
 
   if (!activeCircle || !firebaseUser || !profile) return null;
+
+  const resolvedActorRole =
+    currentMember?.memberRole ?? (profile.accountType === 'elderly' ? 'patient' : profile.accountType);
 
   const openCreateModal = () => {
     setEditingRoutine(null);
@@ -94,6 +98,8 @@ export function RoutinesView() {
           circleId: activeCircle.id,
           memberIds: activeCircle.memberIds,
           createdByUid: firebaseUser.uid,
+          createdByName: profile.displayName,
+          actorRole: resolvedActorRole,
           title: title.trim(),
           category,
           targetTime,
@@ -124,6 +130,7 @@ export function RoutinesView() {
         completed: nextCompleted,
         uid: firebaseUser.uid,
         userName: profile.displayName,
+        actorRole: resolvedActorRole,
       });
     } catch (error) {
       pushToast('error', parseReadableError(error));

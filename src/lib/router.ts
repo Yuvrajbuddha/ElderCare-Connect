@@ -15,7 +15,8 @@ export type AppRoute =
   | '/records'
   | '/routines'
   | '/messages'
-  | '/circle';
+  | '/circle'
+  | '/settings';
 
 const SECTION_TO_ROUTE: Record<AppSection, AppRoute> = {
   overview: '/dashboard',
@@ -25,6 +26,7 @@ const SECTION_TO_ROUTE: Record<AppSection, AppRoute> = {
   routines: '/routines',
   messages: '/messages',
   circle: '/circle',
+  settings: '/settings',
 };
 
 const ROUTE_TO_SECTION: Partial<Record<AppRoute, AppSection>> = {
@@ -35,6 +37,7 @@ const ROUTE_TO_SECTION: Partial<Record<AppRoute, AppSection>> = {
   '/routines': 'routines',
   '/messages': 'messages',
   '/circle': 'circle',
+  '/settings': 'settings',
 };
 
 export function normalizeRoute(pathname: string): AppRoute {
@@ -54,6 +57,7 @@ export function normalizeRoute(pathname: string): AppRoute {
     '/routines',
     '/messages',
     '/circle',
+    '/settings',
   ];
   return (validRoutes.includes(clean as AppRoute) ? clean : '/') as AppRoute;
 }

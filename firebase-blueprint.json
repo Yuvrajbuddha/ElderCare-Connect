@@ -99,6 +99,7 @@
         "bloodType": { "type": "string", "maxLength": 16 },
         "allergies": { "type": "string", "maxLength": 500 },
         "primaryPhysician": { "type": "string", "maxLength": 120 },
+        "emergencyContact": { "type": "string", "maxLength": 160 },
         "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "memberIds": { "type": "array" },
         "createdAt": { "type": "string", "format": "date-time" },
@@ -175,6 +176,7 @@
         "dateKey": { "type": "string", "minLength": 10, "maxLength": 10, "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
         "scheduledTime": { "type": "string", "minLength": 4, "maxLength": 10 },
         "status": { "type": "string", "enum": ["taken", "skipped", "pending"] },
+        "assistanceMode": { "type": "string", "enum": ["administered", "assisted", "self"] },
         "notes": { "type": "string", "maxLength": 300 },
         "loggedByUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "loggedByName": { "type": "string", "minLength": 1, "maxLength": 100 },
@@ -304,6 +306,52 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "circleId", "title", "detail", "severity", "eventType", "createdByUid", "readByUids", "memberIds", "createdAt", "updatedAt"]
+    },
+    "CareTask": {
+      "title": "CareTask",
+      "description": "Daily care task assigned or tracked inside a Care Circle.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "circleId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "category": { "type": "string", "enum": ["medication_prep", "hygiene", "mobility", "nutrition", "vitals", "errand", "observation", "other"] },
+        "dueDate": { "type": "string", "minLength": 10, "maxLength": 10, "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "dueTime": { "type": "string", "minLength": 4, "maxLength": 10 },
+        "priority": { "type": "string", "enum": ["normal", "high", "urgent"] },
+        "status": { "type": "string", "enum": ["pending", "in_progress", "completed"] },
+        "notes": { "type": "string", "maxLength": 500 },
+        "assignedToUid": { "type": "string", "maxLength": 128 },
+        "assignedToName": { "type": "string", "maxLength": 100 },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdByName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "completedByUid": { "type": "string", "maxLength": 128 },
+        "completedByName": { "type": "string", "maxLength": 100 },
+        "memberIds": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "circleId", "title", "category", "dueDate", "dueTime", "priority", "status", "createdByUid", "createdByName", "memberIds", "createdAt", "updatedAt"]
+    },
+    "CareActivityLog": {
+      "title": "CareActivityLog",
+      "description": "Immutable audit trail recording who performed each care action for an elderly profile.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "circleId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "elderlyProfileId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "actorName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "actorRole": { "type": "string", "enum": ["patient", "family", "caretaker"] },
+        "action": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "recordId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "recordType": { "type": "string", "enum": ["medication", "medication_log", "appointment", "health_record", "routine", "task", "message", "observation"] },
+        "detail": { "type": "string", "maxLength": 400 },
+        "memberIds": { "type": "array" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "circleId", "elderlyProfileId", "userId", "actorName", "actorRole", "action", "recordId", "recordType", "memberIds", "timestamp"]
     }
   },
   "firestore": {
@@ -358,6 +406,14 @@
     "/careCircles/{circleId}/notifications/{notificationId}": {
       "schema": { "$ref": "#/entities/CareNotification" },
       "description": "Care Circle event notifications."
+    },
+    "/careCircles/{circleId}/tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/CareTask" },
+      "description": "Daily task management queue for caretakers and Care Circle."
+    },
+    "/careCircles/{circleId}/activityLogs/{logId}": {
+      "schema": { "$ref": "#/entities/CareActivityLog" },
+      "description": "Immutable action audit trail visible to elderly profile owners and circle members."
     }
   }
 }

@@ -4,6 +4,7 @@ export type AccountType = 'elderly' | 'family' | 'caretaker';
 export type MemberRole = 'patient' | 'family' | 'caretaker';
 export type MedicationStatus = 'active' | 'paused' | 'completed';
 export type DoseStatus = 'taken' | 'skipped' | 'pending';
+export type MedicationAssistanceMode = 'administered' | 'assisted' | 'self';
 export type VisitType = 'in_person' | 'telehealth' | 'home_visit';
 export type AppointmentStatus = 'scheduled' | 'completed' | 'cancelled';
 export type RecordType = 'vital_sign' | 'lab_result' | 'diagnosis' | 'immunization' | 'clinical_note';
@@ -11,6 +12,26 @@ export type RoutineCategory = 'hydration' | 'mobility' | 'nutrition' | 'sleep' |
 export type MessageCategory = 'update' | 'alert' | 'question' | 'routine_note';
 export type NotificationSeverity = 'info' | 'warning' | 'urgent';
 export type NotificationEventType = 'medication' | 'appointment' | 'message' | 'record' | 'member';
+export type CareTaskCategory =
+  | 'medication_prep'
+  | 'hygiene'
+  | 'mobility'
+  | 'nutrition'
+  | 'vitals'
+  | 'errand'
+  | 'observation'
+  | 'other';
+export type CareTaskPriority = 'normal' | 'high' | 'urgent';
+export type CareTaskStatus = 'pending' | 'in_progress' | 'completed';
+export type ActivityRecordType =
+  | 'medication'
+  | 'medication_log'
+  | 'appointment'
+  | 'health_record'
+  | 'routine'
+  | 'task'
+  | 'message'
+  | 'observation';
 
 export enum OperationType {
   CREATE = 'create',
@@ -89,6 +110,7 @@ export interface CareCircle {
   bloodType?: string;
   allergies?: string;
   primaryPhysician?: string;
+  emergencyContact?: string;
   ownerId: string;
   memberIds: string[];
   createdAt?: Timestamp;
@@ -137,6 +159,7 @@ export interface MedicationLog {
   dateKey: string;
   scheduledTime: string;
   status: DoseStatus;
+  assistanceMode?: MedicationAssistanceMode;
   notes?: string;
   loggedByUid: string;
   loggedByName: string;
@@ -236,6 +259,42 @@ export interface CareNotification {
   updatedAt?: Timestamp;
 }
 
+export interface CareTask {
+  id: string;
+  circleId: string;
+  title: string;
+  category: CareTaskCategory;
+  dueDate: string;
+  dueTime: string;
+  priority: CareTaskPriority;
+  status: CareTaskStatus;
+  notes?: string;
+  assignedToUid?: string;
+  assignedToName?: string;
+  createdByUid: string;
+  createdByName: string;
+  completedByUid?: string;
+  completedByName?: string;
+  memberIds: string[];
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+}
+
+export interface CareActivityLog {
+  id: string;
+  circleId: string;
+  elderlyProfileId: string;
+  userId: string;
+  actorName: string;
+  actorRole: MemberRole;
+  action: string;
+  recordId: string;
+  recordType: ActivityRecordType;
+  detail?: string;
+  memberIds: string[];
+  timestamp?: Timestamp;
+}
+
 export interface MedicationGuideResponse {
   dailyOverview: string;
   timeBlocks: Array<{
@@ -269,4 +328,5 @@ export type AppSection =
   | 'records'
   | 'routines'
   | 'messages'
-  | 'circle';
+  | 'circle'
+  | 'settings';

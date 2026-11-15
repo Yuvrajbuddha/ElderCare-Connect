@@ -24,10 +24,12 @@ import {
 import {
   AccountType,
   Appointment,
+  CareActivityLog,
   CareCircle,
   CareMessage,
   CareNotification,
   CareRoutine,
+  CareTask,
   CircleInvite,
   CircleMember,
   HealthRecord,
@@ -77,6 +79,8 @@ interface CareContextValue {
   healthRecords: HealthRecord[];
   routines: CareRoutine[];
   routineLogs: RoutineLog[];
+  tasks: CareTask[];
+  activityLogs: CareActivityLog[];
   messages: CareMessage[];
   notifications: CareNotification[];
   unreadNotificationCount: number;
@@ -121,6 +125,8 @@ export function CareProvider({ children }: { children: React.ReactNode }) {
   const [activeCircleDataError, setActiveCircleDataError] = useState<string | null>(null);
 
   const [members, setMembers] = useState<CircleMember[]>([]);
+  const [liveSelfMember, setLiveSelfMember] = useState<CircleMember | null>(null);
+  const [liveSelfLoadedCircleId, setLiveSelfLoadedCircleId] = useState<string>('');
   const [pendingInvitesForMe, setPendingInvitesForMe] = useState<CircleInvite[]>([]);
   const [ownerInvitations, setOwnerInvitations] = useState<CircleInvite[]>([]);
 
@@ -130,6 +136,8 @@ export function CareProvider({ children }: { children: React.ReactNode }) {
   const [healthRecords, setHealthRecords] = useState<HealthRecord[]>([]);
   const [routines, setRoutines] = useState<CareRoutine[]>([]);
   const [routineLogs, setRoutineLogs] = useState<RoutineLog[]>([]);
+  const [tasks, setTasks] = useState<CareTask[]>([]);
+  const [activityLogs, setActivityLogs] = useState<CareActivityLog[]>([]);
   const [messages, setMessages] = useState<CareMessage[]>([]);
   const [notifications, setNotifications] = useState<CareNotification[]>([]);
 
@@ -247,6 +255,8 @@ export function CareProvider({ children }: { children: React.ReactNode }) {
       setProfile(null);
       setCircles([]);
       setMembers([]);
+      setLiveSelfMember(null);
+      setLiveSelfLoadedCircleId('');
       setPendingInvitesForMe([]);
       setOwnerInvitations([]);
       setActiveCircleId('');
@@ -452,7 +462,76 @@ export function CareProvider({ children }: { children: React.ReactNode }) {
     };
   }, [authReady, firebaseUser, emailVerified, activeCircle, memberIdsSignature, pushToast]);
 
-  // 6. Real-time listeners for active Care Circle subcollections
+  // 5b. Real-time permission listener on current user's member document
+  useEffect(() => {
+    if (!authReady || !firebaseUser || !emailVerified || !activeCircle) {
+      setLiveSelfMember(null);
+      setLiveSelfLoadedCircleId('');
+      return;
+    }
+
+    const circleId = activeCircle.id;
+    const memberPath = `careCircles/${circleId}/members/${firebaseUser.uid}`;
+    const unsub = onSnapshot(
+      doc(db, 'careCircles', circleId, 'members', firebaseUser.uid),
+      (snap) => {
+        if (snap.exists()) {
+          const memberData = snap.data() as CircleMember;
+          setLiveSelfMember(memberData);
+          setMembers((prev) => {
+            const idx = prev.findIndex((m) => m.uid === memberData.uid);
+            if (idx === -1) return [...prev, memberData];
+            const next = [...prev];
+            next[idx] = memberData;
+            return next;
+          });
+        } else {
+          setLiveSelfMember(null);
+        }
+        setLiveSelfLoadedCircleId(circleId);
+      },
+      (err) => {
+        setLiveSelfLoadedCircleId(circleId);
+        handleFirestoreError(err, OperationType.GET, memberPath);
+      },
+    );
+    return () => unsub();
+  }, [authReady, firebaseUser, emailVerified, activeCircle?.id]);
+
+  const currentMember = useMemo(() => {
+    if (!firebaseUser || !activeCircle) return null;
+    if (liveSelfMember && liveSelfMember.circleId === activeCircle.id) {
+      return liveSelfMember;
+    }
+    return members.find((m) => m.uid === firebaseUser.uid) ?? null;
+  }, [liveSelfMember, members, firebaseUser, activeCircle]);
+
+  const can = useCallback(
+    (permission: PermissionKey): boolean => {
+      if (isCircleOwner) return true;
+      if (!currentMember) return false;
+      return Boolean(currentMember.permissions?.[permission]);
+    },
+    [isCircleOwner, currentMember],
+  );
+
+  const permissionResolved = Boolean(
+    activeCircle && (isCircleOwner || liveSelfLoadedCircleId === activeCircle.id || currentMember !== null),
+  );
+  const canSubscribeMeds = Boolean(
+    permissionResolved && (isCircleOwner || currentMember?.permissions?.viewMedications),
+  );
+  const canSubscribeAppts = Boolean(
+    permissionResolved &&
+      (isCircleOwner ||
+        currentMember?.permissions?.manageAppointments ||
+        currentMember?.permissions?.viewHealthInfo),
+  );
+  const canSubscribeRecords = Boolean(
+    permissionResolved && (isCircleOwner || currentMember?.permissions?.viewHealthInfo),
+  );
+
+  // 6. Real-time listeners for active Care Circle subcollections (permission-gated)
   useEffect(() => {
     if (!authReady || !firebaseUser || !emailVerified || !activeCircle) {
       setMedications([]);
@@ -461,6 +540,8 @@ export function CareProvider({ children }: { children: React.ReactNode }) {
       setHealthRecords([]);
       setRoutines([]);
       setRoutineLogs([]);
+      setTasks([]);
+      setActivityLogs([]);
       setMessages([]);
       setNotifications([]);
       setActiveCircleDataLoading(false);
@@ -468,74 +549,98 @@ export function CareProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
+    if (!permissionResolved) {
+      setActiveCircleDataLoading(true);
+      return;
+    }
+
     setActiveCircleDataLoading(true);
     setActiveCircleDataError(null);
     const circleId = activeCircle.id;
     const uid = firebaseUser.uid;
+    const expectedListeners =
+      6 + (canSubscribeMeds ? 2 : 0) + (canSubscribeAppts ? 1 : 0) + (canSubscribeRecords ? 1 : 0);
     let settledCount = 0;
     const markSettled = () => {
       settledCount += 1;
-      if (settledCount >= 8) {
+      if (settledCount >= expectedListeners) {
         setActiveCircleDataLoading(false);
       }
     };
 
-    const unsubMeds = onSnapshot(
-      query(collection(db, 'careCircles', circleId, 'medications'), where('memberIds', 'array-contains', uid)),
-      (snap) => {
-        const items = snap.docs.map((d) => d.data() as Medication);
-        items.sort((a, b) => a.name.localeCompare(b.name));
-        setMedications(items);
-        markSettled();
-      },
-      (err) => {
-        markSettled();
-        setActiveCircleDataError('Unable to load medications from Firestore. Please check your connection or permissions.');
-        handleFirestoreError(err, OperationType.LIST, `careCircles/${circleId}/medications`);
-      },
-    );
+    let unsubMeds: (() => void) | undefined;
+    let unsubMedLogs: (() => void) | undefined;
+    if (canSubscribeMeds) {
+      unsubMeds = onSnapshot(
+        query(collection(db, 'careCircles', circleId, 'medications'), where('memberIds', 'array-contains', uid)),
+        (snap) => {
+          const items = snap.docs.map((d) => d.data() as Medication);
+          items.sort((a, b) => a.name.localeCompare(b.name));
+          setMedications(items);
+          markSettled();
+        },
+        (err) => {
+          markSettled();
+          setActiveCircleDataError('Unable to load medications from Firestore. Please check your connection or permissions.');
+          handleFirestoreError(err, OperationType.LIST, `careCircles/${circleId}/medications`);
+        },
+      );
 
-    const unsubMedLogs = onSnapshot(
-      query(collection(db, 'careCircles', circleId, 'medicationLogs'), where('memberIds', 'array-contains', uid)),
-      (snap) => {
-        setMedicationLogs(snap.docs.map((d) => d.data() as MedicationLog));
-        markSettled();
-      },
-      (err) => {
-        markSettled();
-        handleFirestoreError(err, OperationType.LIST, `careCircles/${circleId}/medicationLogs`);
-      },
-    );
+      unsubMedLogs = onSnapshot(
+        query(collection(db, 'careCircles', circleId, 'medicationLogs'), where('memberIds', 'array-contains', uid)),
+        (snap) => {
+          setMedicationLogs(snap.docs.map((d) => d.data() as MedicationLog));
+          markSettled();
+        },
+        (err) => {
+          markSettled();
+          handleFirestoreError(err, OperationType.LIST, `careCircles/${circleId}/medicationLogs`);
+        },
+      );
+    } else {
+      setMedications([]);
+      setMedicationLogs([]);
+    }
 
-    const unsubAppts = onSnapshot(
-      query(collection(db, 'careCircles', circleId, 'appointments'), where('memberIds', 'array-contains', uid)),
-      (snap) => {
-        const items = snap.docs.map((d) => d.data() as Appointment);
-        items.sort((a, b) => `${a.appointmentDate} ${a.appointmentTime}`.localeCompare(`${b.appointmentDate} ${b.appointmentTime}`));
-        setAppointments(items);
-        markSettled();
-      },
-      (err) => {
-        markSettled();
-        setActiveCircleDataError('Unable to load appointments from Firestore. Please check your connection or permissions.');
-        handleFirestoreError(err, OperationType.LIST, `careCircles/${circleId}/appointments`);
-      },
-    );
+    let unsubAppts: (() => void) | undefined;
+    if (canSubscribeAppts) {
+      unsubAppts = onSnapshot(
+        query(collection(db, 'careCircles', circleId, 'appointments'), where('memberIds', 'array-contains', uid)),
+        (snap) => {
+          const items = snap.docs.map((d) => d.data() as Appointment);
+          items.sort((a, b) => `${a.appointmentDate} ${a.appointmentTime}`.localeCompare(`${b.appointmentDate} ${b.appointmentTime}`));
+          setAppointments(items);
+          markSettled();
+        },
+        (err) => {
+          markSettled();
+          setActiveCircleDataError('Unable to load appointments from Firestore. Please check your connection or permissions.');
+          handleFirestoreError(err, OperationType.LIST, `careCircles/${circleId}/appointments`);
+        },
+      );
+    } else {
+      setAppointments([]);
+    }
 
-    const unsubRecords = onSnapshot(
-      query(collection(db, 'careCircles', circleId, 'healthRecords'), where('memberIds', 'array-contains', uid)),
-      (snap) => {
-        const items = snap.docs.map((d) => d.data() as HealthRecord);
-        items.sort((a, b) => b.recordedDate.localeCompare(a.recordedDate));
-        setHealthRecords(items);
-        markSettled();
-      },
-      (err) => {
-        markSettled();
-        setActiveCircleDataError('Unable to load health records from Firestore. Please check your connection or permissions.');
-        handleFirestoreError(err, OperationType.LIST, `careCircles/${circleId}/healthRecords`);
-      },
-    );
+    let unsubRecords: (() => void) | undefined;
+    if (canSubscribeRecords) {
+      unsubRecords = onSnapshot(
+        query(collection(db, 'careCircles', circleId, 'healthRecords'), where('memberIds', 'array-contains', uid)),
+        (snap) => {
+          const items = snap.docs.map((d) => d.data() as HealthRecord);
+          items.sort((a, b) => b.recordedDate.localeCompare(a.recordedDate));
+          setHealthRecords(items);
+          markSettled();
+        },
+        (err) => {
+          markSettled();
+          setActiveCircleDataError('Unable to load health records from Firestore. Please check your connection or permissions.');
+          handleFirestoreError(err, OperationType.LIST, `careCircles/${circleId}/healthRecords`);
+        },
+      );
+    } else {
+      setHealthRecords([]);
+    }
 
     const unsubRoutines = onSnapshot(
       query(collection(db, 'careCircles', circleId, 'routines'), where('memberIds', 'array-contains', uid)),
@@ -591,36 +696,87 @@ export function CareProvider({ children }: { children: React.ReactNode }) {
       },
     );
 
+    const unsubTasks = onSnapshot(
+      query(collection(db, 'careCircles', circleId, 'tasks'), where('memberIds', 'array-contains', uid)),
+      (snap) => {
+        const items = snap.docs.map((d) => d.data() as CareTask);
+        items.sort((a, b) => `${a.dueDate} ${a.dueTime}`.localeCompare(`${b.dueDate} ${b.dueTime}`));
+        setTasks(items);
+        markSettled();
+      },
+      (err) => {
+        markSettled();
+        handleFirestoreError(err, OperationType.LIST, `careCircles/${circleId}/tasks`);
+      },
+    );
+
+    const unsubActivityLogs = onSnapshot(
+      query(collection(db, 'careCircles', circleId, 'activityLogs'), where('memberIds', 'array-contains', uid)),
+      (snap) => {
+        const items = snap.docs.map((d) => d.data() as CareActivityLog);
+        items.sort((a, b) => (b.timestamp?.toMillis?.() ?? Date.now()) - (a.timestamp?.toMillis?.() ?? Date.now()));
+        setActivityLogs(items);
+        markSettled();
+      },
+      (err) => {
+        markSettled();
+        handleFirestoreError(err, OperationType.LIST, `careCircles/${circleId}/activityLogs`);
+      },
+    );
+
     return () => {
-      unsubMeds();
-      unsubMedLogs();
-      unsubAppts();
-      unsubRecords();
+      unsubMeds?.();
+      unsubMedLogs?.();
+      unsubAppts?.();
+      unsubRecords?.();
       unsubRoutines();
       unsubRoutineLogs();
       unsubMessages();
       unsubNotifs();
+      unsubTasks();
+      unsubActivityLogs();
     };
-  }, [authReady, firebaseUser, emailVerified, activeCircle]);
+  }, [
+    authReady,
+    firebaseUser,
+    emailVerified,
+    activeCircle?.id,
+    permissionResolved,
+    canSubscribeMeds,
+    canSubscribeAppts,
+    canSubscribeRecords,
+  ]);
 
-  const currentMember = useMemo(
-    () => (firebaseUser ? members.find((m) => m.uid === firebaseUser.uid) ?? null : null),
-    [members, firebaseUser],
-  );
-
-  const can = useCallback(
-    (permission: PermissionKey): boolean => {
+  const visibleNotifications = useMemo(() => {
+    return notifications.filter((n) => {
       if (isCircleOwner) return true;
-      if (!currentMember) return false;
-      return Boolean(currentMember.permissions?.[permission]);
-    },
-    [isCircleOwner, currentMember],
-  );
+      if (n.eventType === 'medication') return can('viewMedications');
+      if (n.eventType === 'record') return can('viewHealthInfo');
+      if (n.eventType === 'appointment') return can('manageAppointments') || can('viewHealthInfo');
+      return true;
+    });
+  }, [notifications, isCircleOwner, can]);
+
+  const visibleActivityLogs = useMemo(() => {
+    return activityLogs.filter((log) => {
+      if (isCircleOwner) return true;
+      if (log.recordType === 'medication' || log.recordType === 'medication_log') {
+        return can('viewMedications');
+      }
+      if (log.recordType === 'health_record') {
+        return can('viewHealthInfo');
+      }
+      if (log.recordType === 'appointment') {
+        return can('manageAppointments') || can('viewHealthInfo');
+      }
+      return true;
+    });
+  }, [activityLogs, isCircleOwner, can]);
 
   const unreadNotificationCount = useMemo(() => {
     if (!firebaseUser) return 0;
-    return notifications.filter((n) => !n.readByUids.includes(firebaseUser.uid)).length;
-  }, [notifications, firebaseUser]);
+    return visibleNotifications.filter((n) => !n.readByUids.includes(firebaseUser.uid)).length;
+  }, [visibleNotifications, firebaseUser]);
 
   const value: CareContextValue = {
     firebaseUser,
@@ -647,8 +803,10 @@ export function CareProvider({ children }: { children: React.ReactNode }) {
     healthRecords,
     routines,
     routineLogs,
+    tasks,
+    activityLogs: visibleActivityLogs,
     messages,
-    notifications,
+    notifications: visibleNotifications,
     unreadNotificationCount,
     toasts,
     pushToast,

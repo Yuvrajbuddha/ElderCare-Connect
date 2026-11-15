@@ -1,39 +1,20 @@
 import React, { useMemo, useState } from 'react';
-import {
-  Calendar,
-  CheckCircle2,
-  Edit3,
-  Lock,
-  MapPin,
-  Plus,
-  Search,
-  Sparkles,
-  Trash2,
-  Video,
-  X,
-} from 'lucide-react';
+import { Calendar, Edit3, Lock, Plus, XCircle } from 'lucide-react';
 import { useCare } from '../context/CareContext';
 import {
   formatDateDisplay,
   formatTime12h,
   getOffsetDateKey,
+  getTodayKey,
   parseReadableError,
 } from '../lib/utils';
-import { fetchAppointmentPrep } from '../services/aiService';
-import {
-  createAppointment,
-  deleteAppointment,
-  updateAppointment,
-} from '../services/careService';
-import type {
-  Appointment,
-  AppointmentPrepResponse,
-  AppointmentStatus,
-  VisitType,
-} from '../types/healthcare';
+import { createAppointment, updateAppointment } from '../services/careService';
+import type { Appointment } from '../types/healthcare';
 import { EmptyState } from './ui/EmptyState';
 import { Modal } from './ui/Modal';
 import { StatusText } from './ui/StatusText';
+
+type AppointmentTab = 'upcoming' | 'previous';
 
 export function AppointmentsView() {
   const {
@@ -41,128 +22,142 @@ export function AppointmentsView() {
     activeCircleDataLoading,
     firebaseUser,
     profile,
+    currentMember,
+    isCircleOwner,
     can,
     appointments,
-    medications,
-    healthRecords,
     pushToast,
   } = useCare();
 
-  const [statusFilter, setStatusFilter] = useState<'all' | AppointmentStatus>('all');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [modalOpen, setModalOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<AppointmentTab>('upcoming');
+
+  // Add / Edit modal state
+  const [formModalOpen, setFormModalOpen] = useState(false);
   const [editingAppt, setEditingAppt] = useState<Appointment | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  // Form fields
-  const [title, setTitle] = useState('');
+  // View Details modal state
+  const [detailAppt, setDetailAppt] = useState<Appointment | null>(null);
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+
+  // Simple 5-field form state
   const [doctorName, setDoctorName] = useState('');
-  const [specialty, setSpecialty] = useState('');
   const [clinicName, setClinicName] = useState('');
-  const [location, setLocation] = useState('');
-  const [appointmentDate, setAppointmentDate] = useState(getOffsetDateKey(3));
-  const [appointmentTime, setAppointmentTime] = useState('10:00');
-  const [visitType, setVisitType] = useState<VisitType>('in_person');
-  const [prepNotes, setPrepNotes] = useState('');
-  const [outcomeNotes, setOutcomeNotes] = useState('');
-  const [status, setStatus] = useState<AppointmentStatus>('scheduled');
+  const [appointmentDate, setAppointmentDate] = useState(getOffsetDateKey(2));
+  const [appointmentTime, setAppointmentTime] = useState('10:30');
+  const [title, setTitle] = useState('');
 
-  // AI Prep State
-  const [prepLoadingId, setPrepLoadingId] = useState<string | null>(null);
-  const [prepTarget, setPrepTarget] = useState<Appointment | null>(null);
-  const [prepResult, setPrepResult] = useState<AppointmentPrepResponse | null>(null);
+  const todayKey = getTodayKey();
 
-  const filteredAppointments = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    return appointments.filter((a) => {
-      if (statusFilter !== 'all' && a.status !== statusFilter) return false;
-      if (!q) return true;
-      return (
-        a.title.toLowerCase().includes(q) ||
-        a.doctorName.toLowerCase().includes(q) ||
-        (a.specialty ?? '').toLowerCase().includes(q) ||
-        (a.clinicName ?? '').toLowerCase().includes(q)
+  const upcomingAppointments = useMemo(() => {
+    return appointments
+      .filter((a) => a.status === 'scheduled' && a.appointmentDate >= todayKey)
+      .sort((a, b) =>
+        `${a.appointmentDate} ${a.appointmentTime}`.localeCompare(
+          `${b.appointmentDate} ${b.appointmentTime}`,
+        ),
       );
-    });
-  }, [appointments, statusFilter, searchQuery]);
+  }, [appointments, todayKey]);
+
+  const previousAppointments = useMemo(() => {
+    return appointments
+      .filter((a) => a.status !== 'scheduled' || a.appointmentDate < todayKey)
+      .sort((a, b) =>
+        `${b.appointmentDate} ${b.appointmentTime}`.localeCompare(
+          `${a.appointmentDate} ${a.appointmentTime}`,
+        ),
+      );
+  }, [appointments, todayKey]);
 
   if (!activeCircle || !firebaseUser || !profile) return null;
 
-  const isOwner = activeCircle.ownerId === firebaseUser.uid;
-  const canManageAppts = can('manageAppointments');
+  const isElderly = profile.accountType === 'elderly';
+  const canManageAppts = isCircleOwner || can('manageAppointments');
   const canViewAppts = canManageAppts || can('viewHealthInfo');
+  const actorRole =
+    currentMember?.memberRole ?? (profile.accountType === 'elderly' ? 'patient' : profile.accountType);
 
   if (!canViewAppts) {
     return (
-      <div className="rounded-xl border border-[#E5E7EB] bg-white p-10 text-center">
-        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-[#F3F4F6] text-[#4B5563]">
-          <Lock className="h-6 w-6" />
-        </div>
-        <h1 className="font-display mt-4 text-lg font-semibold text-[#1F2937]">
-          Appointments Access Restricted
+      <div className="rounded-2xl border border-[#E5E7EB] bg-white p-10 text-center">
+        <Lock className="mx-auto h-8 w-8 text-[#6B7280]" />
+        <h1 className="font-display mt-3 text-xl font-bold text-[#1F2937]">
+          Appointments Not Shared
         </h1>
         <p className="mx-auto mt-1 max-w-md text-sm text-[#6B7280]">
-          The Care Circle owner ({activeCircle.patientName}) has not granted appointment or healthcare
-          information permissions to your member profile.
+          {activeCircle.patientName} has not granted permission to view appointments yet.
         </p>
       </div>
     );
   }
 
+  const displayedAppointments =
+    activeTab === 'upcoming' ? upcomingAppointments : previousAppointments;
+
+  const canModifyAppt = (appt: Appointment) =>
+    canManageAppts && (appt.status === 'scheduled' || isCircleOwner);
+
   const openCreateModal = () => {
     setEditingAppt(null);
-    setTitle('');
-    setDoctorName(activeCircle.primaryPhysician || '');
-    setSpecialty('');
+    setDoctorName('');
     setClinicName('');
-    setLocation('');
-    setAppointmentDate(getOffsetDateKey(3));
-    setAppointmentTime('10:00');
-    setVisitType('in_person');
-    setPrepNotes('');
-    setOutcomeNotes('');
-    setStatus('scheduled');
-    setModalOpen(true);
+    setAppointmentDate(getOffsetDateKey(2));
+    setAppointmentTime('10:30');
+    setTitle('');
+    setFormModalOpen(true);
   };
 
   const openEditModal = (appt: Appointment) => {
+    setDetailAppt(null);
+    setConfirmingCancel(false);
     setEditingAppt(appt);
-    setTitle(appt.title);
     setDoctorName(appt.doctorName);
-    setSpecialty(appt.specialty || '');
     setClinicName(appt.clinicName || '');
-    setLocation(appt.location || '');
     setAppointmentDate(appt.appointmentDate);
     setAppointmentTime(appt.appointmentTime);
-    setVisitType(appt.visitType);
-    setPrepNotes(appt.prepNotes || '');
-    setOutcomeNotes(appt.outcomeNotes || '');
-    setStatus(appt.status);
-    setModalOpen(true);
+    setTitle(appt.title);
+    setFormModalOpen(true);
+  };
+
+  const openDetailModal = (appt: Appointment) => {
+    setConfirmingCancel(false);
+    setDetailAppt(appt);
   };
 
   const handleSaveAppointment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim() || !doctorName.trim()) {
-      pushToast('error', 'Appointment title and doctor name are required.');
+    if (!doctorName.trim() || !clinicName.trim() || !appointmentDate || !appointmentTime || !title.trim()) {
+      pushToast('error', 'Please fill in all appointment fields.');
       return;
     }
+
     setSubmitting(true);
     try {
       if (editingAppt) {
-        await updateAppointment(activeCircle.id, editingAppt.id, {
-          title: title.trim(),
-          doctorName: doctorName.trim(),
-          specialty,
-          clinicName,
-          location,
-          appointmentDate,
-          appointmentTime,
-          visitType,
-          prepNotes,
-          outcomeNotes,
-          status,
-        });
+        await updateAppointment(
+          activeCircle.id,
+          editingAppt.id,
+          {
+            title: title.trim(),
+            doctorName: doctorName.trim(),
+            specialty: editingAppt.specialty ?? '',
+            clinicName: clinicName.trim(),
+            location: editingAppt.location ?? '',
+            appointmentDate,
+            appointmentTime,
+            visitType: editingAppt.visitType ?? 'in_person',
+            prepNotes: editingAppt.prepNotes ?? '',
+            outcomeNotes: editingAppt.outcomeNotes ?? '',
+            status: editingAppt.status,
+          },
+          {
+            memberIds: activeCircle.memberIds,
+            actorUid: firebaseUser.uid,
+            actorName: profile.displayName,
+            actorRole,
+          },
+        );
         pushToast('success', 'Appointment updated.');
       } else {
         await createAppointment({
@@ -170,19 +165,18 @@ export function AppointmentsView() {
           memberIds: activeCircle.memberIds,
           createdByUid: firebaseUser.uid,
           createdByName: profile.displayName,
+          actorRole,
           title: title.trim(),
           doctorName: doctorName.trim(),
-          specialty,
-          clinicName,
-          location,
+          clinicName: clinicName.trim(),
           appointmentDate,
           appointmentTime,
-          visitType,
-          prepNotes,
+          visitType: 'in_person',
         });
-        pushToast('success', 'Appointment scheduled and Care Circle notified.');
+        setActiveTab(appointmentDate >= todayKey ? 'upcoming' : 'previous');
+        pushToast('success', 'Appointment added.');
       }
-      setModalOpen(false);
+      setFormModalOpen(false);
     } catch (error) {
       pushToast('error', parseReadableError(error));
     } finally {
@@ -190,390 +184,307 @@ export function AppointmentsView() {
     }
   };
 
-  const handleMarkCompleted = async (appt: Appointment) => {
+  const handleCancelAppointment = async (appt: Appointment) => {
+    setCancelling(true);
     try {
-      await updateAppointment(activeCircle.id, appt.id, {
-        title: appt.title,
-        doctorName: appt.doctorName,
-        specialty: appt.specialty,
-        clinicName: appt.clinicName,
-        location: appt.location,
-        appointmentDate: appt.appointmentDate,
-        appointmentTime: appt.appointmentTime,
-        visitType: appt.visitType,
-        prepNotes: appt.prepNotes,
-        outcomeNotes: appt.outcomeNotes || 'Visit completed.',
-        status: 'completed',
-      });
-      pushToast('success', `${appt.title} marked as completed.`);
-    } catch (error) {
-      pushToast('error', parseReadableError(error));
-    }
-  };
-
-  const handleDelete = async (appt: Appointment) => {
-    try {
-      await deleteAppointment(activeCircle.id, appt.id);
-      pushToast('info', 'Appointment removed.');
-    } catch (error) {
-      pushToast('error', parseReadableError(error));
-    }
-  };
-
-  const handleGeneratePrep = async (appt: Appointment) => {
-    setPrepLoadingId(appt.id);
-    try {
-      const result = await fetchAppointmentPrep({
-        circleId: activeCircle.id,
-        patientName: activeCircle.patientName,
-        allergies: activeCircle.allergies,
-        appointment: appt,
-        activeMedications: medications.filter((m) => m.status === 'active'),
-        recentRecords: healthRecords.slice(0, 6),
-      });
-      setPrepTarget(appt);
-      setPrepResult(result);
+      await updateAppointment(
+        activeCircle.id,
+        appt.id,
+        {
+          title: appt.title,
+          doctorName: appt.doctorName,
+          specialty: appt.specialty ?? '',
+          clinicName: appt.clinicName ?? '',
+          location: appt.location ?? '',
+          appointmentDate: appt.appointmentDate,
+          appointmentTime: appt.appointmentTime,
+          visitType: appt.visitType ?? 'in_person',
+          prepNotes: appt.prepNotes ?? '',
+          outcomeNotes: appt.outcomeNotes ?? '',
+          status: 'cancelled',
+        },
+        {
+          memberIds: activeCircle.memberIds,
+          actorUid: firebaseUser.uid,
+          actorName: profile.displayName,
+          actorRole,
+        },
+      );
+      setDetailAppt(null);
+      setConfirmingCancel(false);
+      pushToast('info', 'Appointment cancelled.');
     } catch (error) {
       pushToast('error', parseReadableError(error));
     } finally {
-      setPrepLoadingId(null);
+      setCancelling(false);
     }
   };
 
-  const handleSaveQuestionsToNotes = async () => {
-    if (!prepTarget || !prepResult) return;
-    const merged = [
-      prepTarget.prepNotes ? `${prepTarget.prepNotes}\n\n` : '',
-      'Questions for Doctor:\n',
-      ...prepResult.questionsForDoctor.map((q) => `- ${q}`),
-    ]
-      .join('\n')
-      .slice(0, 600);
-    try {
-      await updateAppointment(activeCircle.id, prepTarget.id, {
-        title: prepTarget.title,
-        doctorName: prepTarget.doctorName,
-        specialty: prepTarget.specialty,
-        clinicName: prepTarget.clinicName,
-        location: prepTarget.location,
-        appointmentDate: prepTarget.appointmentDate,
-        appointmentTime: prepTarget.appointmentTime,
-        visitType: prepTarget.visitType,
-        prepNotes: merged,
-        outcomeNotes: prepTarget.outcomeNotes,
-        status: prepTarget.status,
-      });
-      pushToast('success', 'AI questions saved to appointment preparation notes.');
-    } catch (error) {
-      pushToast('error', parseReadableError(error));
-    }
+  const getStatusLabel = (appt: Appointment) => {
+    if (appt.status === 'cancelled') return 'Cancelled';
+    if (appt.status === 'completed') return 'Completed';
+    if (appt.appointmentDate < todayKey) return 'Past';
+    return 'Upcoming';
+  };
+
+  const getStatusVariant = (appt: Appointment) => {
+    if (appt.status === 'cancelled') return 'neutral' as const;
+    if (appt.status === 'completed') return 'success' as const;
+    if (appt.appointmentDate < todayKey) return 'neutral' as const;
+    return 'warning' as const;
   };
 
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
-          <h1 className="font-display text-2xl font-bold text-[#1F2937]">Doctor Appointments</h1>
-          <p className="mt-0.5 text-sm text-[#6B7280]">
-            Coordinate upcoming clinical visits, telehealth links, and visit preparation for {activeCircle.patientName}.
+          <h1 className={`font-display font-bold text-[#1F2937] ${isElderly ? 'text-3xl' : 'text-2xl'}`}>
+            Appointments
+          </h1>
+          <p className={`mt-1 text-[#6B7280] ${isElderly ? 'text-base' : 'text-sm'}`}>
+            Doctor appointments for {activeCircle.patientName}.
           </p>
         </div>
+
         {canManageAppts && (
           <button
             type="button"
             onClick={openCreateModal}
-            className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-[#065F46] px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#047857] whitespace-nowrap shrink-0"
+            className="inline-flex min-h-[48px] shrink-0 items-center justify-center gap-2 rounded-xl bg-[#065F46] px-5 text-sm font-bold text-white hover:bg-[#047857]"
           >
             <Plus className="h-4 w-4" />
-            <span>Schedule Appointment</span>
+            <span>Add Appointment</span>
           </button>
         )}
       </div>
 
-      {/* Gemini AI Visit Prep Output */}
-      {prepTarget && prepResult && (
-        <section className="rounded-xl border border-[#0D9488]/30 bg-white p-6">
-          <div className="flex items-start justify-between gap-4 border-b border-[#E5E7EB] pb-4">
-            <div className="flex items-center gap-2.5">
-              <Sparkles className="h-5 w-5 text-[#0D9488]" />
-              <div>
-                <h2 className="font-display text-base font-semibold text-[#1F2937]">
-                  Visit Prep Brief: {prepTarget.title}
-                </h2>
-                <p className="text-xs text-[#6B7280]">
-                  {prepTarget.doctorName} · {formatDateDisplay(prepTarget.appointmentDate)}
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              {prepTarget.status === 'scheduled' && canManageAppts && (
-                <button
-                  type="button"
-                  onClick={handleSaveQuestionsToNotes}
-                  className="rounded-lg border border-[#065F46] bg-[#ECFDF5] px-3 py-1.5 text-xs font-semibold text-[#065F46] hover:bg-[#D1FAE5]"
-                >
-                  Save Questions to Visit Notes
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => {
-                  setPrepTarget(null);
-                  setPrepResult(null);
-                }}
-                aria-label="Close AI prep"
-                className="rounded-lg p-1.5 text-[#6B7280] hover:bg-[#F3F4F6]"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
-
-          <div className="mt-4 space-y-4">
-            <p className="text-sm leading-relaxed text-[#1F2937]">{prepResult.visitSummary}</p>
-            <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-              <div className="border-t border-[#E5E7EB] pt-3">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-[#065F46]">
-                  Preparation Checklist
-                </h3>
-                <ul className="mt-2 space-y-1.5 text-sm text-[#374151]">
-                  {prepResult.checklist.map((item, idx) => (
-                    <li key={idx}>• {item}</li>
-                  ))}
-                </ul>
-              </div>
-              <div className="border-t border-[#E5E7EB] pt-3">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-[#0D9488]">
-                  Recommended Questions for {prepTarget.doctorName}
-                </h3>
-                <ul className="mt-2 space-y-1.5 text-sm text-[#374151]">
-                  {prepResult.questionsForDoctor.map((q, idx) => (
-                    <li key={idx}>• {q}</li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-            <p className="text-xs text-[#6B7280]">{prepResult.disclaimer}</p>
-          </div>
-        </section>
-      )}
-
-      {/* Filter Toolbar & Appointments List */}
-      <section className="rounded-xl border border-[#E5E7EB] bg-white">
-        <div className="flex flex-col justify-between gap-3 border-b border-[#E5E7EB] px-6 py-4 md:flex-row md:items-center">
-          <div className="inline-flex rounded-lg bg-[#F3F4F6] p-1">
-            {(['all', 'scheduled', 'completed', 'cancelled'] as const).map((tab) => (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => setStatusFilter(tab)}
-                className={`rounded-md px-3 py-1.5 text-xs font-medium capitalize transition-colors ${
-                  statusFilter === tab
-                    ? 'bg-white text-[#064E3B] shadow-sm'
-                    : 'text-[#6B7280] hover:text-[#1F2937]'
-                }`}
-              >
-                {tab}
-              </button>
-            ))}
-          </div>
-
-          <div className="relative w-full md:w-64">
-            <Search className="pointer-events-none absolute top-2.5 left-3 h-4 w-4 text-[#9CA3AF]" />
-            <input
-              type="search"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search doctor or clinic..."
-              className="w-full rounded-lg border border-[#D1D5DB] bg-white py-2 pr-3 pl-9 text-xs text-[#1F2937] focus:border-[#065F46] focus:outline-none"
-            />
+      {/* Upcoming / Previous List */}
+      <section className="rounded-2xl border border-[#E5E7EB] bg-white">
+        <div className="border-b border-[#E5E7EB] px-6 py-4">
+          <div className="inline-flex rounded-xl bg-[#F3F4F6] p-1">
+            <button
+              type="button"
+              onClick={() => setActiveTab('upcoming')}
+              className={`min-h-[40px] rounded-lg px-4 text-sm font-semibold ${
+                activeTab === 'upcoming'
+                  ? 'bg-white text-[#065F46] shadow-sm'
+                  : 'text-[#6B7280] hover:text-[#1F2937]'
+              }`}
+            >
+              Upcoming ({upcomingAppointments.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('previous')}
+              className={`min-h-[40px] rounded-lg px-4 text-sm font-semibold ${
+                activeTab === 'previous'
+                  ? 'bg-white text-[#065F46] shadow-sm'
+                  : 'text-[#6B7280] hover:text-[#1F2937]'
+              }`}
+            >
+              Previous ({previousAppointments.length})
+            </button>
           </div>
         </div>
 
         {activeCircleDataLoading ? (
-          <div className="p-6 space-y-3">
+          <div className="space-y-3 p-6">
             {[1, 2].map((i) => (
-              <div key={i} className="h-20 animate-pulse rounded bg-[#F3F4F6]" />
+              <div key={i} className="h-20 animate-pulse rounded-xl bg-[#F3F4F6]" />
             ))}
           </div>
-        ) : filteredAppointments.length === 0 ? (
+        ) : displayedAppointments.length === 0 ? (
           <div className="p-6">
             <EmptyState
               icon={Calendar}
-              title="No appointments found"
-              description="Keep every specialist visit, follow-up, and telehealth session visible to the whole Care Circle."
-              actionLabel={canManageAppts ? 'Schedule Appointment' : undefined}
-              onAction={canManageAppts ? openCreateModal : undefined}
+              title={
+                activeTab === 'upcoming' ? 'No upcoming appointments' : 'No previous appointments'
+              }
+              description={
+                activeTab === 'upcoming'
+                  ? 'Add a doctor appointment to keep track of the date, time, and hospital.'
+                  : 'Completed, cancelled, or past appointments will appear here.'
+              }
+              actionLabel={activeTab === 'upcoming' && canManageAppts ? 'Add Appointment' : undefined}
+              onAction={activeTab === 'upcoming' && canManageAppts ? openCreateModal : undefined}
             />
           </div>
         ) : (
           <div className="divide-y divide-[#E5E7EB]">
-            {filteredAppointments.map((appt) => {
-              const canEdit = canManageAppts && (appt.status === 'scheduled' || isOwner);
-              return (
-                <div
-                  key={appt.id}
-                  className="flex flex-col justify-between gap-4 px-6 py-5 lg:flex-row lg:items-start"
-                >
-                  <div className="min-w-0 flex-1 space-y-1.5">
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                      <span className="font-mono text-xs font-semibold text-[#065F46] tabular-nums">
-                        {formatDateDisplay(appt.appointmentDate)} · {formatTime12h(appt.appointmentTime)}
-                      </span>
-                      <StatusText
-                        variant={
-                          appt.status === 'scheduled'
-                            ? 'warning'
-                            : appt.status === 'completed'
-                              ? 'success'
-                              : 'neutral'
-                        }
-                        label={appt.status.charAt(0).toUpperCase() + appt.status.slice(1)}
-                      />
-                      <span className="inline-flex items-center gap-1 text-xs text-[#6B7280]">
-                        {appt.visitType === 'telehealth' ? (
-                          <Video className="h-3.5 w-3.5" />
-                        ) : (
-                          <MapPin className="h-3.5 w-3.5" />
-                        )}
-                        <span>
-                          {appt.visitType === 'in_person'
-                            ? 'In-person'
-                            : appt.visitType === 'telehealth'
-                              ? 'Telehealth'
-                              : 'Home visit'}
-                        </span>
-                      </span>
-                    </div>
-
-                    <h3 className="font-display text-base font-semibold text-[#1F2937]">{appt.title}</h3>
-                    <p className="text-sm text-[#4B5563]">
-                      {appt.doctorName}
-                      {appt.specialty ? ` · ${appt.specialty}` : ''}
-                      {appt.clinicName ? ` · ${appt.clinicName}` : ''}
-                    </p>
-                    {appt.location && <p className="text-xs text-[#6B7280]">{appt.location}</p>}
-                    {appt.prepNotes && (
-                      <p className="mt-2 whitespace-pre-line text-xs leading-relaxed text-[#4B5563]">
-                        <span className="font-semibold text-[#1F2937]">Prep notes:</span> {appt.prepNotes}
-                      </p>
-                    )}
-                    {appt.outcomeNotes && (
-                      <p className="mt-1 whitespace-pre-line text-xs leading-relaxed text-[#065F46]">
-                        <span className="font-semibold">Outcome:</span> {appt.outcomeNotes}
-                      </p>
-                    )}
+            {displayedAppointments.map((appt) => (
+              <div
+                key={appt.id}
+                className="flex flex-col justify-between gap-3 px-6 py-5 sm:flex-row sm:items-center"
+              >
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <span className="font-mono text-sm font-bold text-[#065F46]">
+                      {formatDateDisplay(appt.appointmentDate)} · {formatTime12h(appt.appointmentTime)}
+                    </span>
+                    <StatusText variant={getStatusVariant(appt)} label={getStatusLabel(appt)} />
                   </div>
-
-                  <div className="flex flex-wrap items-center gap-2 shrink-0">
-                    <button
-                      type="button"
-                      disabled={prepLoadingId === appt.id}
-                      onClick={() => handleGeneratePrep(appt)}
-                      className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-[#0D9488] bg-white px-3 py-1.5 text-xs font-semibold text-[#0F766E] hover:bg-[#F0FDFA] disabled:opacity-60"
-                    >
-                      <Sparkles className="h-3.5 w-3.5" />
-                      <span>{prepLoadingId === appt.id ? 'Preparing...' : 'AI Visit Prep'}</span>
-                    </button>
-
-                    {canManageAppts && appt.status === 'scheduled' && (
-                      <button
-                        type="button"
-                        onClick={() => handleMarkCompleted(appt)}
-                        className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg bg-[#065F46] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#047857]"
-                      >
-                        <CheckCircle2 className="h-3.5 w-3.5" />
-                        <span>Complete</span>
-                      </button>
-                    )}
-
-                    {canEdit && (
-                      <button
-                        type="button"
-                        onClick={() => openEditModal(appt)}
-                        aria-label={`Edit ${appt.title}`}
-                        className="rounded-lg p-2 text-[#4B5563] hover:bg-[#F3F4F6]"
-                      >
-                        <Edit3 className="h-4 w-4" />
-                      </button>
-                    )}
-                    {canManageAppts && (
-                      <button
-                        type="button"
-                        onClick={() => handleDelete(appt)}
-                        aria-label={`Delete ${appt.title}`}
-                        className="rounded-lg p-2 text-[#6B7280] hover:bg-red-50 hover:text-[#B91C1C]"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    )}
-                  </div>
+                  <h2 className={`mt-1 font-bold text-[#1F2937] ${isElderly ? 'text-xl' : 'text-base'}`}>
+                    {appt.title}
+                  </h2>
+                  <p className="mt-0.5 text-sm text-[#4B5563]">
+                    {appt.doctorName}
+                    {appt.clinicName ? ` · ${appt.clinicName}` : ''}
+                  </p>
                 </div>
-              );
-            })}
+
+                <button
+                  type="button"
+                  onClick={() => openDetailModal(appt)}
+                  className="min-h-[46px] shrink-0 rounded-xl border border-[#D1D5DB] bg-white px-5 text-sm font-semibold text-[#1F2937] hover:bg-[#F3F4F6]"
+                >
+                  View Details
+                </button>
+              </div>
+            ))}
           </div>
         )}
       </section>
 
-      {/* Schedule / Edit Modal */}
+      {/* View Details Modal */}
       <Modal
-        open={modalOpen}
-        onClose={() => setModalOpen(false)}
-        title={editingAppt ? 'Edit Appointment' : 'Schedule Appointment'}
-        subtitle="New appointments notify all Care Circle members."
+        open={Boolean(detailAppt)}
+        onClose={() => {
+          setDetailAppt(null);
+          setConfirmingCancel(false);
+        }}
+        title={detailAppt?.title || 'Appointment Details'}
+      >
+        {detailAppt && (
+          <div className="space-y-4 text-base text-[#374151]">
+            <div className="space-y-2.5">
+              <p>
+                <span className="font-semibold text-[#1F2937]">Doctor Name:</span>{' '}
+                {detailAppt.doctorName}
+              </p>
+              <p>
+                <span className="font-semibold text-[#1F2937]">Hospital Name:</span>{' '}
+                {detailAppt.clinicName || 'Not specified'}
+              </p>
+              <p>
+                <span className="font-semibold text-[#1F2937]">Date:</span>{' '}
+                {formatDateDisplay(detailAppt.appointmentDate)}
+              </p>
+              <p>
+                <span className="font-semibold text-[#1F2937]">Time:</span>{' '}
+                {formatTime12h(detailAppt.appointmentTime)}
+              </p>
+              <p>
+                <span className="font-semibold text-[#1F2937]">Reason for Visit:</span>{' '}
+                {detailAppt.title}
+              </p>
+              <p>
+                <span className="font-semibold text-[#1F2937]">Status:</span>{' '}
+                {getStatusLabel(detailAppt)}
+              </p>
+            </div>
+
+            {confirmingCancel && canManageAppts && detailAppt.status === 'scheduled' ? (
+              <div className="rounded-xl border border-red-200 bg-red-50 p-4">
+                <p className="text-sm font-semibold text-[#991B1B]">
+                  Are you sure you want to cancel this appointment?
+                </p>
+                <div className="mt-3 flex flex-wrap justify-end gap-2">
+                  <button
+                    type="button"
+                    disabled={cancelling}
+                    onClick={() => setConfirmingCancel(false)}
+                    className="min-h-[42px] rounded-xl border border-[#D1D5DB] bg-white px-4 text-sm font-semibold text-[#374151]"
+                  >
+                    Keep Appointment
+                  </button>
+                  <button
+                    type="button"
+                    disabled={cancelling}
+                    onClick={() => handleCancelAppointment(detailAppt)}
+                    className="min-h-[42px] rounded-xl bg-[#B91C1C] px-4 text-sm font-bold text-white hover:bg-[#991B1B] disabled:opacity-60"
+                  >
+                    {cancelling ? 'Cancelling...' : 'Yes, Cancel Appointment'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center justify-end gap-3 border-t border-[#E5E7EB] pt-4">
+                {canModifyAppt(detailAppt) && (
+                  <button
+                    type="button"
+                    onClick={() => openEditModal(detailAppt)}
+                    className="inline-flex min-h-[46px] items-center gap-1.5 rounded-xl border border-[#D1D5DB] bg-white px-4 text-sm font-semibold text-[#1F2937] hover:bg-[#F3F4F6]"
+                  >
+                    <Edit3 className="h-4 w-4" />
+                    <span>Edit</span>
+                  </button>
+                )}
+
+                {canManageAppts && detailAppt.status === 'scheduled' && (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingCancel(true)}
+                    className="inline-flex min-h-[46px] items-center gap-1.5 rounded-xl border border-red-200 bg-red-50 px-4 text-sm font-semibold text-[#B91C1C] hover:bg-red-100"
+                  >
+                    <XCircle className="h-4 w-4" />
+                    <span>Cancel Appointment</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setDetailAppt(null)}
+                  className="min-h-[46px] rounded-xl bg-[#065F46] px-5 text-sm font-bold text-white hover:bg-[#047857]"
+                >
+                  Close
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
+
+      {/* Simple Add / Edit Appointment Form Modal */}
+      <Modal
+        open={formModalOpen}
+        onClose={() => setFormModalOpen(false)}
+        title={editingAppt ? 'Edit Appointment' : 'Add Appointment'}
       >
         <form onSubmit={handleSaveAppointment} className="space-y-4">
           <div>
-            <label htmlFor="appt-title" className="block text-sm font-medium text-[#1F2937]">
-              Visit Reason / Title *
+            <label htmlFor="appt-doc" className="block text-sm font-semibold text-[#1F2937]">
+              Doctor Name *
             </label>
             <input
-              id="appt-title"
+              id="appt-doc"
               type="text"
               required
-              maxLength={140}
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g. Cardiology Follow-up"
-              className="mt-1 w-full rounded-lg border border-[#D1D5DB] px-3 py-2 text-sm focus:border-[#065F46] focus:outline-none"
+              value={doctorName}
+              onChange={(e) => setDoctorName(e.target.value)}
+              placeholder="e.g. Dr. Marcus Vance"
+              className="mt-1 min-h-[46px] w-full rounded-xl border border-[#D1D5DB] px-3.5 py-2.5 text-base focus:border-[#065F46] focus:outline-none"
+            />
+          </div>
+
+          <div>
+            <label htmlFor="appt-hospital" className="block text-sm font-semibold text-[#1F2937]">
+              Hospital Name *
+            </label>
+            <input
+              id="appt-hospital"
+              type="text"
+              required
+              value={clinicName}
+              onChange={(e) => setClinicName(e.target.value)}
+              placeholder="e.g. City General Hospital"
+              className="mt-1 min-h-[46px] w-full rounded-xl border border-[#D1D5DB] px-3.5 py-2.5 text-base focus:border-[#065F46] focus:outline-none"
             />
           </div>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <label htmlFor="appt-doc" className="block text-sm font-medium text-[#1F2937]">
-                Doctor / Clinician *
-              </label>
-              <input
-                id="appt-doc"
-                type="text"
-                required
-                maxLength={120}
-                value={doctorName}
-                onChange={(e) => setDoctorName(e.target.value)}
-                placeholder="Dr. Marcus Vance"
-                className="mt-1 w-full rounded-lg border border-[#D1D5DB] px-3 py-2 text-sm focus:border-[#065F46] focus:outline-none"
-              />
-            </div>
-            <div>
-              <label htmlFor="appt-spec" className="block text-sm font-medium text-[#1F2937]">
-                Specialty
-              </label>
-              <input
-                id="appt-spec"
-                type="text"
-                maxLength={100}
-                value={specialty}
-                onChange={(e) => setSpecialty(e.target.value)}
-                placeholder="Cardiology"
-                className="mt-1 w-full rounded-lg border border-[#D1D5DB] px-3 py-2 text-sm focus:border-[#065F46] focus:outline-none"
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <div>
-              <label htmlFor="appt-date" className="block text-sm font-medium text-[#1F2937]">
+              <label htmlFor="appt-date" className="block text-sm font-semibold text-[#1F2937]">
                 Date *
               </label>
               <input
@@ -582,11 +493,12 @@ export function AppointmentsView() {
                 required
                 value={appointmentDate}
                 onChange={(e) => setAppointmentDate(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-[#D1D5DB] px-3 py-2 font-mono text-sm focus:border-[#065F46] focus:outline-none"
+                className="mt-1 min-h-[46px] w-full rounded-xl border border-[#D1D5DB] px-3.5 py-2.5 font-mono text-base focus:border-[#065F46] focus:outline-none"
               />
             </div>
+
             <div>
-              <label htmlFor="appt-time" className="block text-sm font-medium text-[#1F2937]">
+              <label htmlFor="appt-time" className="block text-sm font-semibold text-[#1F2937]">
                 Time *
               </label>
               <input
@@ -595,120 +507,40 @@ export function AppointmentsView() {
                 required
                 value={appointmentTime}
                 onChange={(e) => setAppointmentTime(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-[#D1D5DB] px-3 py-2 font-mono text-sm focus:border-[#065F46] focus:outline-none"
-              />
-            </div>
-            <div>
-              <label htmlFor="appt-type" className="block text-sm font-medium text-[#1F2937]">
-                Visit Type
-              </label>
-              <select
-                id="appt-type"
-                value={visitType}
-                onChange={(e) => setVisitType(e.target.value as VisitType)}
-                className="mt-1 w-full rounded-lg border border-[#D1D5DB] bg-white px-3 py-2 text-sm focus:border-[#065F46] focus:outline-none"
-              >
-                <option value="in_person">In-Person</option>
-                <option value="telehealth">Telehealth</option>
-                <option value="home_visit">Home Visit</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div>
-              <label htmlFor="appt-clinic" className="block text-sm font-medium text-[#1F2937]">
-                Clinic / Hospital
-              </label>
-              <input
-                id="appt-clinic"
-                type="text"
-                maxLength={140}
-                value={clinicName}
-                onChange={(e) => setClinicName(e.target.value)}
-                placeholder="Mercy Senior Heart Center"
-                className="mt-1 w-full rounded-lg border border-[#D1D5DB] px-3 py-2 text-sm focus:border-[#065F46] focus:outline-none"
-              />
-            </div>
-            <div>
-              <label htmlFor="appt-loc" className="block text-sm font-medium text-[#1F2937]">
-                Address or Video Link
-              </label>
-              <input
-                id="appt-loc"
-                type="text"
-                maxLength={240}
-                value={location}
-                onChange={(e) => setLocation(e.target.value)}
-                placeholder="Suite 410, 820 Elmwood Ave"
-                className="mt-1 w-full rounded-lg border border-[#D1D5DB] px-3 py-2 text-sm focus:border-[#065F46] focus:outline-none"
+                className="mt-1 min-h-[46px] w-full rounded-xl border border-[#D1D5DB] px-3.5 py-2.5 font-mono text-base focus:border-[#065F46] focus:outline-none"
               />
             </div>
           </div>
 
           <div>
-            <label htmlFor="appt-prep" className="block text-sm font-medium text-[#1F2937]">
-              Preparation Notes
+            <label htmlFor="appt-reason" className="block text-sm font-semibold text-[#1F2937]">
+              Reason for Visit *
             </label>
-            <textarea
-              id="appt-prep"
-              rows={2}
-              maxLength={600}
-              value={prepNotes}
-              onChange={(e) => setPrepNotes(e.target.value)}
-              placeholder="Bring morning blood pressure readings and current pill bottles."
-              className="mt-1 w-full rounded-lg border border-[#D1D5DB] px-3 py-2 text-sm focus:border-[#065F46] focus:outline-none"
+            <input
+              id="appt-reason"
+              type="text"
+              required
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="e.g. Routine heart checkup"
+              className="mt-1 min-h-[46px] w-full rounded-xl border border-[#D1D5DB] px-3.5 py-2.5 text-base focus:border-[#065F46] focus:outline-none"
             />
           </div>
-
-          {editingAppt && (
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div>
-                <label htmlFor="appt-status" className="block text-sm font-medium text-[#1F2937]">
-                  Status
-                </label>
-                <select
-                  id="appt-status"
-                  value={status}
-                  onChange={(e) => setStatus(e.target.value as AppointmentStatus)}
-                  className="mt-1 w-full rounded-lg border border-[#D1D5DB] bg-white px-3 py-2 text-sm focus:border-[#065F46] focus:outline-none"
-                >
-                  <option value="scheduled">Scheduled</option>
-                  <option value="completed">Completed</option>
-                  <option value="cancelled">Cancelled</option>
-                </select>
-              </div>
-              <div>
-                <label htmlFor="appt-outcome" className="block text-sm font-medium text-[#1F2937]">
-                  Visit Outcome Notes
-                </label>
-                <input
-                  id="appt-outcome"
-                  type="text"
-                  maxLength={800}
-                  value={outcomeNotes}
-                  onChange={(e) => setOutcomeNotes(e.target.value)}
-                  placeholder="Summary after appointment"
-                  className="mt-1 w-full rounded-lg border border-[#D1D5DB] px-3 py-2 text-sm focus:border-[#065F46] focus:outline-none"
-                />
-              </div>
-            </div>
-          )}
 
           <div className="flex justify-end gap-3 border-t border-[#E5E7EB] pt-4">
             <button
               type="button"
-              onClick={() => setModalOpen(false)}
-              className="rounded-lg border border-[#D1D5DB] bg-white px-4 py-2 text-sm font-medium text-[#374151] hover:bg-[#F3F4F6]"
+              onClick={() => setFormModalOpen(false)}
+              className="min-h-[46px] rounded-xl border border-[#D1D5DB] px-4 text-sm font-semibold text-[#374151]"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={submitting}
-              className="rounded-lg bg-[#065F46] px-5 py-2 text-sm font-semibold text-white hover:bg-[#047857] disabled:opacity-60"
+              className="min-h-[46px] rounded-xl bg-[#065F46] px-5 text-sm font-bold text-white hover:bg-[#047857] disabled:opacity-60"
             >
-              {submitting ? 'Saving...' : editingAppt ? 'Save Changes' : 'Schedule Appointment'}
+              {submitting ? 'Saving...' : editingAppt ? 'Save Changes' : 'Add Appointment'}
             </button>
           </div>
         </form>

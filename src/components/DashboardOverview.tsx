@@ -235,22 +235,31 @@ export function DashboardOverview({ onNavigate }: DashboardOverviewProps) {
           </h1>
           <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[#6B7280]">
             <span className="tabular-nums">Age {activeCircle.patientAge}</span>
-            {activeCircle.bloodType && (
+            {(isCircleOwner || can('viewHealthInfo')) ? (
               <>
-                <span aria-hidden="true">·</span>
-                <span>Blood Type {activeCircle.bloodType}</span>
+                {activeCircle.bloodType && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span>Blood Type {activeCircle.bloodType}</span>
+                  </>
+                )}
+                {activeCircle.primaryPhysician && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span>Primary: {activeCircle.primaryPhysician}</span>
+                  </>
+                )}
+                {activeCircle.allergies && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span className="text-[#B45309]">Allergies: {activeCircle.allergies}</span>
+                  </>
+                )}
               </>
-            )}
-            {activeCircle.primaryPhysician && (
+            ) : (
               <>
                 <span aria-hidden="true">·</span>
-                <span>Primary: {activeCircle.primaryPhysician}</span>
-              </>
-            )}
-            {activeCircle.allergies && (
-              <>
-                <span aria-hidden="true">·</span>
-                <span className="text-[#B45309]">Allergies: {activeCircle.allergies}</span>
+                <span>Clinical details restricted by owner</span>
               </>
             )}
           </div>

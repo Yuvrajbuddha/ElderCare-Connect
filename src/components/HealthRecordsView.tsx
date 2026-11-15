@@ -35,6 +35,7 @@ export function HealthRecordsView() {
     activeCircleDataLoading,
     firebaseUser,
     profile,
+    currentMember,
     can,
     healthRecords,
     pushToast,
@@ -78,6 +79,9 @@ export function HealthRecordsView() {
   );
 
   if (!activeCircle || !firebaseUser || !profile) return null;
+
+  const resolvedActorRole =
+    currentMember?.memberRole ?? (profile.accountType === 'elderly' ? 'patient' : profile.accountType);
 
   if (!can('viewHealthInfo')) {
     return (
@@ -131,16 +135,26 @@ export function HealthRecordsView() {
     setSubmitting(true);
     try {
       if (editingRecord) {
-        await updateHealthRecord(activeCircle.id, editingRecord.id, {
-          recordType,
-          title: title.trim(),
-          recordedDate,
-          providerName,
-          metricValue,
-          metricUnit,
-          summary,
-          flagged,
-        });
+        await updateHealthRecord(
+          activeCircle.id,
+          editingRecord.id,
+          {
+            recordType,
+            title: title.trim(),
+            recordedDate,
+            providerName,
+            metricValue,
+            metricUnit,
+            summary,
+            flagged,
+          },
+          {
+            memberIds: activeCircle.memberIds,
+            uid: firebaseUser.uid,
+            name: profile.displayName,
+            role: resolvedActorRole,
+          },
+        );
         pushToast('success', 'Health record updated.');
       } else {
         await createHealthRecord({
@@ -148,6 +162,7 @@ export function HealthRecordsView() {
           memberIds: activeCircle.memberIds,
           createdByUid: firebaseUser.uid,
           createdByName: profile.displayName,
+          actorRole: resolvedActorRole,
           recordType,
           title: title.trim(),
           recordedDate,

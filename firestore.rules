@@ -77,6 +77,10 @@ service cloud.firestore {
       );
     }
 
+    function isCaretakerMember(circleId) {
+      return isCircleMember(circleId) && memberDoc(circleId).memberRole == 'caretaker';
+    }
+
     // -------------------------------------------------------------------------
     // Entity Validation Blueprints
     // -------------------------------------------------------------------------
@@ -138,7 +142,7 @@ service cloud.firestore {
 
     function isValidCareCircle(data, circleId) {
       return data.keys().hasAll(['id', 'name', 'patientName', 'patientAge', 'ownerId', 'memberIds', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['id', 'name', 'patientName', 'patientAge', 'bloodType', 'allergies', 'primaryPhysician', 'ownerId', 'memberIds', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'name', 'patientName', 'patientAge', 'bloodType', 'allergies', 'primaryPhysician', 'emergencyContact', 'ownerId', 'memberIds', 'createdAt', 'updatedAt'])
         && data.id == circleId
         && isValidId(data.id)
         && isValidString(data.name, 1, 120)
@@ -147,6 +151,7 @@ service cloud.firestore {
         && (!('bloodType' in data) || isValidOptString(data.bloodType, 16))
         && (!('allergies' in data) || isValidOptString(data.allergies, 500))
         && (!('primaryPhysician' in data) || isValidOptString(data.primaryPhysician, 120))
+        && (!('emergencyContact' in data) || isValidOptString(data.emergencyContact, 160))
         && isValidId(data.ownerId)
         && isBoundedMemberList(data.memberIds)
         && data.createdAt is timestamp
@@ -197,7 +202,7 @@ service cloud.firestore {
 
     function isValidMedicationLog(data, circleId, logId) {
       return data.keys().hasAll(['id', 'circleId', 'medicationId', 'medicationName', 'dosage', 'dateKey', 'scheduledTime', 'status', 'loggedByUid', 'loggedByName', 'memberIds', 'loggedAt', 'updatedAt'])
-        && data.keys().hasOnly(['id', 'circleId', 'medicationId', 'medicationName', 'dosage', 'dateKey', 'scheduledTime', 'status', 'notes', 'loggedByUid', 'loggedByName', 'memberIds', 'loggedAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'circleId', 'medicationId', 'medicationName', 'dosage', 'dateKey', 'scheduledTime', 'status', 'assistanceMode', 'notes', 'loggedByUid', 'loggedByName', 'memberIds', 'loggedAt', 'updatedAt'])
         && data.id == logId
         && data.circleId == circleId
         && isValidId(data.id)
@@ -208,6 +213,7 @@ service cloud.firestore {
         && isValidDateKey(data.dateKey)
         && isValidString(data.scheduledTime, 4, 10)
         && data.status in ['taken', 'skipped', 'pending']
+        && (!('assistanceMode' in data) || data.assistanceMode in ['administered', 'assisted', 'self'])
         && (!('notes' in data) || isValidOptString(data.notes, 300))
         && isValidId(data.loggedByUid)
         && isValidString(data.loggedByName, 1, 100)
@@ -331,6 +337,50 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidCareTask(data, circleId, taskId) {
+      return data.keys().hasAll(['id', 'circleId', 'title', 'category', 'dueDate', 'dueTime', 'priority', 'status', 'createdByUid', 'createdByName', 'memberIds', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'circleId', 'title', 'category', 'dueDate', 'dueTime', 'priority', 'status', 'notes', 'assignedToUid', 'assignedToName', 'createdByUid', 'createdByName', 'completedByUid', 'completedByName', 'memberIds', 'createdAt', 'updatedAt'])
+        && data.id == taskId
+        && data.circleId == circleId
+        && isValidId(data.id)
+        && isValidId(data.circleId)
+        && isValidString(data.title, 1, 140)
+        && data.category in ['medication_prep', 'hygiene', 'mobility', 'nutrition', 'vitals', 'errand', 'observation', 'other']
+        && isValidDateKey(data.dueDate)
+        && isValidString(data.dueTime, 4, 10)
+        && data.priority in ['normal', 'high', 'urgent']
+        && data.status in ['pending', 'in_progress', 'completed']
+        && (!('notes' in data) || isValidOptString(data.notes, 500))
+        && (!('assignedToUid' in data) || isValidOptString(data.assignedToUid, 128))
+        && (!('assignedToName' in data) || isValidOptString(data.assignedToName, 100))
+        && isValidId(data.createdByUid)
+        && isValidString(data.createdByName, 1, 100)
+        && (!('completedByUid' in data) || isValidOptString(data.completedByUid, 128))
+        && (!('completedByName' in data) || isValidOptString(data.completedByName, 100))
+        && isBoundedMemberList(data.memberIds)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidActivityLog(data, circleId, logId) {
+      return data.keys().hasAll(['id', 'circleId', 'elderlyProfileId', 'userId', 'actorName', 'actorRole', 'action', 'recordId', 'recordType', 'memberIds', 'timestamp'])
+        && data.keys().hasOnly(['id', 'circleId', 'elderlyProfileId', 'userId', 'actorName', 'actorRole', 'action', 'recordId', 'recordType', 'detail', 'memberIds', 'timestamp'])
+        && data.id == logId
+        && data.circleId == circleId
+        && data.elderlyProfileId == circleId
+        && isValidId(data.id)
+        && isValidId(data.circleId)
+        && isValidId(data.userId)
+        && isValidString(data.actorName, 1, 100)
+        && data.actorRole in ['patient', 'family', 'caretaker']
+        && isValidString(data.action, 1, 160)
+        && isValidString(data.recordId, 1, 128)
+        && data.recordType in ['medication', 'medication_log', 'appointment', 'health_record', 'routine', 'task', 'message', 'observation']
+        && (!('detail' in data) || isValidOptString(data.detail, 400))
+        && isBoundedMemberList(data.memberIds)
+        && data.timestamp is timestamp;
+    }
+
     // -------------------------------------------------------------------------
     // Collection Rules
     // -------------------------------------------------------------------------
@@ -436,7 +486,7 @@ service cloud.firestore {
         && (
           // Action: Elderly Owner updates healthcare profile details
           (isCircleOwner(circleId)
-            && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'patientName', 'patientAge', 'bloodType', 'allergies', 'primaryPhysician', 'updatedAt']))
+            && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'patientName', 'patientAge', 'bloodType', 'allergies', 'primaryPhysician', 'emergencyContact', 'updatedAt']))
           ||
           // Action: Invited member joining circle atomically with valid member document
           (!(request.auth.uid in existing().memberIds)
@@ -547,7 +597,13 @@ service cloud.firestore {
           && incoming().updatedAt == request.time
           && (
             (hasMemberPermission(circleId, 'editMedications')
+              && !isCaretakerMember(circleId)
               && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'dosage', 'frequency', 'scheduledTimes', 'instructions', 'prescribedBy', 'remainingQuantity', 'refillThreshold', 'status', 'updatedAt']))
+            ||
+            (hasMemberPermission(circleId, 'editMedications')
+              && isCaretakerMember(circleId)
+              && incoming().dosage == existing().dosage
+              && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'frequency', 'scheduledTimes', 'instructions', 'prescribedBy', 'remainingQuantity', 'refillThreshold', 'status', 'updatedAt']))
             ||
             (hasMemberPermission(circleId, 'addMedications')
               && incoming().diff(existing()).affectedKeys().hasOnly(['remainingQuantity', 'updatedAt']))
@@ -584,7 +640,7 @@ service cloud.firestore {
           && (
             ((hasMemberPermission(circleId, 'addMedications') || hasMemberPermission(circleId, 'editMedications'))
               && incoming().loggedByUid == request.auth.uid
-              && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'notes', 'loggedByUid', 'loggedByName', 'updatedAt']))
+              && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'assistanceMode', 'notes', 'loggedByUid', 'loggedByName', 'updatedAt']))
             ||
             ((isCircleOwner(circleId) || incoming().memberIds == get(/databases/$(database)/documents/careCircles/$(circleId)).data.memberIds)
               && incoming().diff(existing()).affectedKeys().hasOnly(['memberIds', 'updatedAt']))
@@ -780,6 +836,66 @@ service cloud.firestore {
               && incoming().diff(existing()).affectedKeys().hasOnly(['memberIds', 'updatedAt']))
           );
         allow delete: if isValidId(circleId) && isValidId(notificationId) && isCircleMember(circleId);
+      }
+
+      // 3j. Daily Care Tasks
+      match /tasks/{taskId} {
+        allow get: if isValidId(circleId) && isValidId(taskId) && isCircleMember(circleId);
+        allow list: if isVerified() && request.auth.uid in resource.data.memberIds;
+        allow create: if isValidId(circleId)
+          && isValidId(taskId)
+          && isVerified()
+          && isValidCareTask(incoming(), circleId, taskId)
+          && isCircleMember(circleId)
+          && incoming().createdByUid == request.auth.uid
+          && request.auth.uid in incoming().memberIds
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isValidId(circleId)
+          && isValidId(taskId)
+          && isVerified()
+          && isValidCareTask(incoming(), circleId, taskId)
+          && isCircleMember(circleId)
+          && incoming().id == existing().id
+          && incoming().circleId == existing().circleId
+          && incoming().createdByUid == existing().createdByUid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            (incoming().diff(existing()).affectedKeys().hasOnly(['title', 'category', 'dueDate', 'dueTime', 'priority', 'status', 'notes', 'assignedToUid', 'assignedToName', 'completedByUid', 'completedByName', 'updatedAt']))
+            ||
+            ((isCircleOwner(circleId) || incoming().memberIds == get(/databases/$(database)/documents/careCircles/$(circleId)).data.memberIds)
+              && incoming().diff(existing()).affectedKeys().hasOnly(['memberIds', 'updatedAt']))
+          );
+        allow delete: if isValidId(circleId) && isValidId(taskId) && isCircleMember(circleId) && (existing().createdByUid == request.auth.uid || isCircleOwner(circleId));
+      }
+
+      // 3k. Care Activity Audit Logs (Immutable action trail visible to elderly profile owner)
+      match /activityLogs/{logId} {
+        allow get: if isValidId(circleId) && isValidId(logId) && isCircleMember(circleId);
+        allow list: if isVerified() && request.auth.uid in resource.data.memberIds;
+        allow create: if isValidId(circleId)
+          && isValidId(logId)
+          && isVerified()
+          && isValidActivityLog(incoming(), circleId, logId)
+          && isCircleMember(circleId)
+          && incoming().userId == request.auth.uid
+          && request.auth.uid in incoming().memberIds
+          && incoming().timestamp == request.time;
+        allow update: if isValidId(circleId)
+          && isValidId(logId)
+          && isVerified()
+          && isValidActivityLog(incoming(), circleId, logId)
+          && isCircleMember(circleId)
+          && incoming().id == existing().id
+          && incoming().circleId == existing().circleId
+          && incoming().elderlyProfileId == existing().elderlyProfileId
+          && incoming().userId == existing().userId
+          && incoming().recordId == existing().recordId
+          && incoming().timestamp == existing().timestamp
+          && (isCircleOwner(circleId) || incoming().memberIds == get(/databases/$(database)/documents/careCircles/$(circleId)).data.memberIds)
+          && incoming().diff(existing()).affectedKeys().hasOnly(['memberIds']);
+        allow delete: if isValidId(circleId) && isValidId(logId) && isCircleOwner(circleId);
       }
     }
   }

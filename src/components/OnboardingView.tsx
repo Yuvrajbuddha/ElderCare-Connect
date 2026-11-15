@@ -123,6 +123,7 @@ export function OnboardingView() {
         bloodType,
         allergies,
         primaryPhysician,
+        emergencyContact: profile.emergencyContact,
         relation: 'Self (Owner)',
       });
       await selectActiveCircle(circleId);

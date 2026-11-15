@@ -8,7 +8,6 @@ import {
   Search,
   Sparkles,
   Trash2,
-  X,
 } from 'lucide-react';
 import { useCare } from '../context/CareContext';
 import {
@@ -27,6 +26,7 @@ import {
 import type {
   Medication,
   MedicationGuideResponse,
+  MedicationLog,
   MedicationStatus,
 } from '../types/healthcare';
 import { EmptyState } from './ui/EmptyState';
@@ -39,19 +39,29 @@ export function MedicationsView() {
     activeCircleDataLoading,
     firebaseUser,
     profile,
+    currentMember,
     can,
     medications,
     medicationLogs,
     pushToast,
   } = useCare();
 
-  const [statusFilter, setStatusFilter] = useState<'all' | MedicationStatus>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | MedicationStatus>('active');
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedDate, setSelectedDate] = useState(getTodayKey());
+  const selectedDate = getTodayKey();
 
+  // Add / Edit modal
   const [modalOpen, setModalOpen] = useState(false);
   const [editingMed, setEditingMed] = useState<Medication | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // View Details modals
+  const [detailMed, setDetailMed] = useState<Medication | null>(null);
+  const [detailSlot, setDetailSlot] = useState<{
+    med: Medication;
+    time: string;
+    log?: MedicationLog;
+  } | null>(null);
 
   // Form state
   const [name, setName] = useState('');
@@ -64,7 +74,8 @@ export function MedicationsView() {
   const [refillThreshold, setRefillThreshold] = useState('7');
   const [status, setStatus] = useState<MedicationStatus>('active');
 
-  // Gemini AI Guide state
+  // AI Guide modal
+  const [guideModalOpen, setGuideModalOpen] = useState(false);
   const [aiGuideLoading, setAiGuideLoading] = useState(false);
   const [aiGuide, setAiGuide] = useState<MedicationGuideResponse | null>(null);
   const [aiGuideError, setAiGuideError] = useState<string | null>(null);
@@ -98,22 +109,23 @@ export function MedicationsView() {
 
   if (!activeCircle || !firebaseUser || !profile) return null;
 
+  const isElderly = profile.accountType === 'elderly';
   const canViewMeds = can('viewMedications');
   const canAddMeds = can('addMedications');
   const canEditMeds = can('editMedications');
+  const isCaretaker = profile.accountType === 'caretaker' || currentMember?.memberRole === 'caretaker';
+  const resolvedActorRole =
+    currentMember?.memberRole ?? (profile.accountType === 'elderly' ? 'patient' : profile.accountType);
 
   if (!canViewMeds) {
     return (
-      <div className="rounded-xl border border-[#E5E7EB] bg-white p-10 text-center">
-        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-[#F3F4F6] text-[#4B5563]">
-          <Lock className="h-6 w-6" />
-        </div>
-        <h1 className="font-display mt-4 text-lg font-semibold text-[#1F2937]">
-          Medication Schedule Access Restricted
+      <div className="rounded-2xl border border-[#E5E7EB] bg-white p-10 text-center">
+        <Lock className="mx-auto h-8 w-8 text-[#6B7280]" />
+        <h1 className="font-display mt-3 text-xl font-bold text-[#1F2937]">
+          Medicine Schedule Not Shared
         </h1>
         <p className="mx-auto mt-1 max-w-md text-sm text-[#6B7280]">
-          The Care Circle owner ({activeCircle.patientName}) has not granted &quot;View medication
-          schedules&quot; permission to your member profile.
+          {activeCircle.patientName} has not granted permission to view medicines yet.
         </p>
       </div>
     );
@@ -134,6 +146,7 @@ export function MedicationsView() {
   };
 
   const openEditModal = (med: Medication) => {
+    setDetailMed(null);
     setEditingMed(med);
     setName(med.name);
     setDosage(med.dosage);
@@ -158,30 +171,42 @@ export function MedicationsView() {
   const handleSaveMedication = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || !dosage.trim()) {
-      pushToast('error', 'Medication name and dosage are required.');
+      pushToast('error', 'Medicine name and dosage are required.');
       return;
     }
     setSubmitting(true);
     const scheduledTimes = parseTimes(timesInput);
     try {
       if (editingMed) {
-        await updateMedication(activeCircle.id, editingMed.id, {
-          name: name.trim(),
-          dosage: dosage.trim(),
-          frequency: frequency.trim() || 'Once daily',
-          scheduledTimes,
-          instructions,
-          prescribedBy,
-          remainingQuantity: Number(remainingQuantity) || 0,
-          refillThreshold: Number(refillThreshold) || 7,
-          status,
-        });
+        await updateMedication(
+          activeCircle.id,
+          editingMed.id,
+          {
+            name: name.trim(),
+            dosage: isCaretaker ? editingMed.dosage : dosage.trim(),
+            frequency: frequency.trim() || 'Once daily',
+            scheduledTimes,
+            instructions,
+            prescribedBy,
+            remainingQuantity: Number(remainingQuantity) || 0,
+            refillThreshold: Number(refillThreshold) || 7,
+            status,
+          },
+          {
+            memberIds: activeCircle.memberIds,
+            uid: firebaseUser.uid,
+            name: profile.displayName,
+            role: resolvedActorRole,
+          },
+        );
         pushToast('success', `${name.trim()} updated.`);
       } else {
         await createMedication({
           circleId: activeCircle.id,
           memberIds: activeCircle.memberIds,
           createdByUid: firebaseUser.uid,
+          actorName: profile.displayName,
+          actorRole: resolvedActorRole,
           name: name.trim(),
           dosage: dosage.trim(),
           frequency: frequency.trim() || 'Once daily',
@@ -192,7 +217,7 @@ export function MedicationsView() {
           refillThreshold: Number(refillThreshold) || 7,
           status,
         });
-        pushToast('success', `${name.trim()} added to daily schedule.`);
+        pushToast('success', `${name.trim()} added.`);
       }
       setModalOpen(false);
     } catch (error) {
@@ -205,14 +230,15 @@ export function MedicationsView() {
   const handleDeleteMedication = async (med: Medication) => {
     try {
       await deleteMedication(activeCircle.id, med.id);
-      pushToast('info', `${med.name} removed from Care Circle.`);
+      setDetailMed(null);
+      pushToast('info', `${med.name} removed.`);
     } catch (error) {
       pushToast('error', parseReadableError(error));
     }
   };
 
   const handleDoseAction = async (
-    slot: (typeof dailyScheduleSlots)[number],
+    slot: { med: Medication; time: string; log?: MedicationLog },
     nextStatus: 'taken' | 'skipped' | 'pending',
   ) => {
     try {
@@ -224,10 +250,25 @@ export function MedicationsView() {
         dateKey: selectedDate,
         scheduledTime: slot.time,
         status: nextStatus,
+        assistanceMode:
+          nextStatus === 'taken'
+            ? isCaretaker
+              ? 'administered'
+              : resolvedActorRole === 'patient'
+                ? 'self'
+                : 'assisted'
+            : undefined,
         uid: firebaseUser.uid,
         userName: profile.displayName,
+        actorRole: resolvedActorRole,
       });
-      pushToast('success', `${slot.med.name} (${formatTime12h(slot.time)}) updated to ${nextStatus}.`);
+      setDetailSlot(null);
+      pushToast(
+        'success',
+        nextStatus === 'taken'
+          ? `${slot.med.name} marked as taken.`
+          : `${slot.med.name} updated.`,
+      );
     } catch (error) {
       pushToast('error', parseReadableError(error));
     }
@@ -236,9 +277,10 @@ export function MedicationsView() {
   const handleGenerateGuide = async () => {
     const activeMeds = medications.filter((m) => m.status === 'active');
     if (activeMeds.length === 0) {
-      pushToast('info', 'Add at least one active medication first.');
+      pushToast('info', 'Add at least one medicine first.');
       return;
     }
+    setGuideModalOpen(true);
     setAiGuideLoading(true);
     setAiGuideError(null);
     try {
@@ -264,117 +306,47 @@ export function MedicationsView() {
       {/* Header Row */}
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
-          <h1 className="font-display text-2xl font-bold text-[#1F2937]">Medication Schedules</h1>
-          <p className="mt-0.5 text-sm text-[#6B7280]">
-            Manage active prescriptions, daily dose adherence, and refill alerts for {activeCircle.patientName}.
+          <h1 className={`font-display font-bold text-[#1F2937] ${isElderly ? 'text-3xl' : 'text-2xl'}`}>
+            {isElderly ? 'My Medicines' : `Medicines for ${activeCircle.patientName}`}
+          </h1>
+          <p className={`mt-1 text-[#6B7280] ${isElderly ? 'text-base' : 'text-sm'}`}>
+            Check today&apos;s doses and manage prescriptions.
           </p>
         </div>
+
         <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
             onClick={handleGenerateGuide}
-            disabled={aiGuideLoading}
-            className="inline-flex min-h-[40px] items-center gap-2 rounded-lg border border-[#0D9488] bg-white px-4 py-2 text-xs font-semibold text-[#0F766E] transition-colors hover:bg-[#F0FDFA] disabled:opacity-60 whitespace-nowrap shrink-0"
+            className="inline-flex min-h-[46px] items-center gap-2 rounded-xl border border-[#065F46] bg-[#ECFDF5] px-4 text-sm font-bold text-[#065F46] hover:bg-[#D1FAE5]"
           >
             <Sparkles className="h-4 w-4" />
-            <span>{aiGuideLoading ? 'Building Guide...' : 'AI Daily Care Guide'}</span>
+            <span>Care Guide</span>
           </button>
           {canAddMeds && (
             <button
               type="button"
               onClick={openCreateModal}
-              className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-[#065F46] px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#047857] whitespace-nowrap shrink-0"
+              className="inline-flex min-h-[46px] items-center gap-2 rounded-xl bg-[#065F46] px-5 text-sm font-bold text-white hover:bg-[#047857]"
             >
               <Plus className="h-4 w-4" />
-              <span>Add Medication</span>
+              <span>Add Medicine</span>
             </button>
           )}
         </div>
       </div>
 
-      {/* Gemini AI Medication Guide Panel */}
-      {(aiGuide || aiGuideError) && (
-        <section className="rounded-xl border border-[#0D9488]/30 bg-white p-6">
-          <div className="flex items-start justify-between gap-4 border-b border-[#E5E7EB] pb-4">
-            <div className="flex items-center gap-2.5">
-              <Sparkles className="h-5 w-5 text-[#0D9488]" />
-              <div>
-                <h2 className="font-display text-base font-semibold text-[#1F2937]">
-                  Plain-Language Daily Medication Guide
-                </h2>
-                <p className="text-xs text-[#6B7280]">Prepared for {activeCircle.patientName} &amp; care circle</p>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setAiGuide(null);
-                setAiGuideError(null);
-              }}
-              aria-label="Close AI guide"
-              className="rounded-lg p-1.5 text-[#6B7280] hover:bg-[#F3F4F6]"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-
-          {aiGuideError ? (
-            <p className="mt-4 text-sm text-[#B91C1C]">{aiGuideError}</p>
-          ) : aiGuide ? (
-            <div className="mt-4 space-y-5">
-              <p className="text-sm leading-relaxed text-[#1F2937]">{aiGuide.dailyOverview}</p>
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                {aiGuide.timeBlocks.map((block, i) => (
-                  <div key={i} className="border-t border-[#E5E7EB] pt-3">
-                    <h3 className="font-display text-sm font-semibold text-[#065F46]">{block.period}</h3>
-                    <ul className="mt-2 space-y-1 text-sm text-[#374151]">
-                      {block.items.map((item, j) => (
-                        <li key={j}>• {item}</li>
-                      ))}
-                    </ul>
-                    <p className="mt-2 text-xs text-[#6B7280]">{block.mealTip}</p>
-                  </div>
-                ))}
-              </div>
-              {aiGuide.pharmacistQuestions.length > 0 && (
-                <div className="border-t border-[#E5E7EB] pt-4">
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-[#0D9488]">
-                    Questions to Confirm with Pharmacist or Doctor
-                  </h3>
-                  <ul className="mt-2 space-y-1 text-sm text-[#374151]">
-                    {aiGuide.pharmacistQuestions.map((q, i) => (
-                      <li key={i}>• {q}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              <p className="text-xs text-[#6B7280]">{aiGuide.disclaimer}</p>
-            </div>
-          ) : null}
-        </section>
-      )}
-
-      {/* Daily Dose Tracking Strip */}
-      <section className="rounded-xl border border-[#E5E7EB] bg-white">
-        <div className="flex flex-col justify-between gap-3 border-b border-[#E5E7EB] px-6 py-4 sm:flex-row sm:items-center">
-          <div>
-            <h2 className="font-display text-base font-semibold text-[#1F2937]">
-              Daily Dose Adherence Log
-            </h2>
-            <p className="text-xs text-[#6B7280]">Log doses for {formatDateDisplay(selectedDate)}</p>
-          </div>
-          <input
-            type="date"
-            aria-label="Select dose log date"
-            value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
-            className="rounded-lg border border-[#D1D5DB] px-3 py-1.5 font-mono text-xs text-[#1F2937] focus:border-[#065F46] focus:outline-none"
-          />
+      {/* 1. Today's Dose Checklist — One Primary Action */}
+      <section className="rounded-2xl border border-[#E5E7EB] bg-white">
+        <div className="border-b border-[#E5E7EB] px-6 py-4">
+          <h2 className={`font-display font-bold text-[#1F2937] ${isElderly ? 'text-xl' : 'text-lg'}`}>
+            Today&apos;s Schedule · {formatDateDisplay(selectedDate)}
+          </h2>
         </div>
 
         {dailyScheduleSlots.length === 0 ? (
-          <div className="px-6 py-8 text-center text-sm text-[#6B7280]">
-            No active medications scheduled. Add an active medication below to start logging daily doses.
+          <div className="px-6 py-10 text-center text-base text-[#6B7280]">
+            No medicines scheduled for today.
           </div>
         ) : (
           <div className="divide-y divide-[#E5E7EB]">
@@ -383,52 +355,61 @@ export function MedicationsView() {
               return (
                 <div
                   key={slot.key}
-                  className="flex flex-col justify-between gap-3 px-6 py-3 sm:flex-row sm:items-center"
+                  className="flex flex-col justify-between gap-3 px-6 py-4 sm:flex-row sm:items-center"
                 >
                   <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                      <span className="font-mono text-xs font-semibold text-[#065F46] tabular-nums">
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <span className="font-mono text-base font-bold text-[#065F46]">
                         {formatTime12h(slot.time)}
                       </span>
-                      <span className="text-sm font-semibold text-[#1F2937]">{slot.med.name}</span>
-                      <span className="text-xs text-[#6B7280] tabular-nums">{slot.med.dosage}</span>
+                      <span className={`font-bold text-[#1F2937] ${isElderly ? 'text-lg' : 'text-base'}`}>
+                        {slot.med.name}
+                      </span>
+                      <span className="text-sm text-[#4B5563]">{slot.med.dosage}</span>
+                    </div>
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                      <StatusText
+                        variant={
+                          doseStatus === 'taken'
+                            ? 'success'
+                            : doseStatus === 'skipped'
+                              ? 'warning'
+                              : 'neutral'
+                        }
+                        label={
+                          doseStatus === 'taken'
+                            ? 'Taken'
+                            : doseStatus === 'skipped'
+                              ? 'Skipped'
+                              : 'Due'
+                        }
+                      />
                       {slot.log && (
                         <span className="text-xs text-[#6B7280]">
-                          · Logged by {slot.log.loggedByName}
+                          by {slot.log.loggedByName}
                         </span>
                       )}
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    {doseStatus === 'taken' && <StatusText variant="success" label="Taken" />}
-                    {doseStatus === 'skipped' && <StatusText variant="warning" label="Skipped" />}
-                    {doseStatus === 'pending' && <StatusText variant="neutral" label="Pending" />}
 
-                    {(canAddMeds || canEditMeds) && (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => handleDoseAction(slot, 'taken')}
-                          className={`inline-flex min-h-[34px] items-center gap-1 rounded-lg px-3 py-1 text-xs font-medium transition-colors ${
-                            doseStatus === 'taken'
-                              ? 'bg-[#ECFDF5] text-[#065F46]'
-                              : 'bg-[#065F46] text-white hover:bg-[#047857]'
-                          }`}
-                        >
-                          <Check className="h-3.5 w-3.5" />
-                          <span>Taken</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleDoseAction(slot, doseStatus === 'skipped' ? 'pending' : 'skipped')
-                          }
-                          className="inline-flex min-h-[34px] items-center rounded-lg border border-[#D1D5DB] bg-white px-2.5 py-1 text-xs font-medium text-[#4B5563] hover:bg-[#F3F4F6]"
-                        >
-                          {doseStatus === 'skipped' ? 'Reset' : 'Skip'}
-                        </button>
-                      </>
-                    )}
+                  <div className="flex items-center gap-2 shrink-0">
+                    {(canAddMeds || canEditMeds) && doseStatus !== 'taken' ? (
+                      <button
+                        type="button"
+                        onClick={() => handleDoseAction(slot, 'taken')}
+                        className="inline-flex min-h-[46px] items-center gap-2 rounded-xl bg-[#065F46] px-5 text-sm font-bold text-white hover:bg-[#047857]"
+                      >
+                        <Check className="h-4 w-4" />
+                        <span>Mark as Taken</span>
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => setDetailSlot(slot)}
+                      className="min-h-[46px] rounded-xl border border-[#D1D5DB] bg-white px-4 text-sm font-semibold text-[#374151] hover:bg-[#F3F4F6]"
+                    >
+                      View Details
+                    </button>
                   </div>
                 </div>
               );
@@ -437,19 +418,17 @@ export function MedicationsView() {
         )}
       </section>
 
-      {/* Prescriptions Ledger */}
-      <section className="rounded-xl border border-[#E5E7EB] bg-white">
+      {/* 2. Medicines List — Clean Rows with Single View Details Action */}
+      <section className="rounded-2xl border border-[#E5E7EB] bg-white">
         <div className="flex flex-col justify-between gap-3 border-b border-[#E5E7EB] px-6 py-4 md:flex-row md:items-center">
-          <div className="inline-flex rounded-lg bg-[#F3F4F6] p-1">
-            {(['all', 'active', 'paused', 'completed'] as const).map((tab) => (
+          <div className="inline-flex rounded-xl bg-[#F3F4F6] p-1">
+            {(['active', 'all', 'paused', 'completed'] as const).map((tab) => (
               <button
                 key={tab}
                 type="button"
                 onClick={() => setStatusFilter(tab)}
-                className={`rounded-md px-3 py-1.5 text-xs font-medium capitalize transition-colors ${
-                  statusFilter === tab
-                    ? 'bg-white text-[#064E3B] shadow-sm'
-                    : 'text-[#6B7280] hover:text-[#1F2937]'
+                className={`min-h-[38px] rounded-lg px-3.5 text-sm font-semibold capitalize ${
+                  statusFilter === tab ? 'bg-white text-[#065F46] shadow-sm' : 'text-[#6B7280]'
                 }`}
               >
                 {tab}
@@ -458,183 +437,289 @@ export function MedicationsView() {
           </div>
 
           <div className="relative w-full md:w-64">
-            <Search className="pointer-events-none absolute top-2.5 left-3 h-4 w-4 text-[#9CA3AF]" />
+            <Search className="pointer-events-none absolute top-3 left-3 h-4 w-4 text-[#9CA3AF]" />
             <input
               type="search"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search medications..."
-              className="w-full rounded-lg border border-[#D1D5DB] bg-white py-2 pr-3 pl-9 text-xs text-[#1F2937] focus:border-[#065F46] focus:outline-none"
+              placeholder="Search medicines..."
+              className="min-h-[42px] w-full rounded-xl border border-[#D1D5DB] bg-white py-2 pr-3 pl-9 text-sm text-[#1F2937] focus:border-[#065F46] focus:outline-none"
             />
           </div>
         </div>
 
         {activeCircleDataLoading ? (
-          <div className="p-6 space-y-3">
+          <div className="space-y-3 p-6">
             {[1, 2, 3].map((i) => (
-              <div key={i} className="h-11 animate-pulse rounded bg-[#F3F4F6]" />
+              <div key={i} className="h-14 animate-pulse rounded-xl bg-[#F3F4F6]" />
             ))}
           </div>
         ) : filteredMeds.length === 0 ? (
           <div className="p-6">
             <EmptyState
               icon={Pill}
-              title="No medications match this view"
-              description="Add prescriptions with scheduled times and instructions so your Care Circle stays aligned."
-              actionLabel={canAddMeds ? 'Add Medication' : undefined}
+              title="No medicines found"
+              description="Add a prescription to track daily times and refills."
+              actionLabel={canAddMeds ? 'Add Medicine' : undefined}
               onAction={canAddMeds ? openCreateModal : undefined}
             />
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-left text-sm">
-              <thead>
-                <tr className="border-b border-[#E5E7EB] bg-[#F9FAFB] text-xs font-semibold text-[#6B7280]">
-                  <th className="px-6 py-3">Medication</th>
-                  <th className="px-4 py-3">Dosage &amp; Schedule</th>
-                  <th className="px-4 py-3">Prescriber</th>
-                  <th className="px-4 py-3 text-right">Stock</th>
-                  <th className="px-4 py-3">Status</th>
-                  <th className="px-6 py-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#E5E7EB]">
-                {filteredMeds.map((med) => {
-                  const lowStock =
-                    med.remainingQuantity !== undefined &&
-                    med.refillThreshold !== undefined &&
-                    med.remainingQuantity <= med.refillThreshold;
+          <div className="divide-y divide-[#E5E7EB]">
+            {filteredMeds.map((med) => {
+              const lowStock =
+                med.remainingQuantity !== undefined &&
+                med.refillThreshold !== undefined &&
+                med.remainingQuantity <= med.refillThreshold;
 
-                  return (
-                    <tr key={med.id} className="hover:bg-[#F9FAFB]">
-                      <td className="px-6 py-3.5">
-                        <div className="font-semibold text-[#1F2937]">{med.name}</div>
-                        {med.instructions && (
-                          <div className="mt-0.5 max-w-xs truncate text-xs text-[#6B7280]">
-                            {med.instructions}
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-4 py-3.5">
-                        <div className="font-mono text-xs font-medium text-[#1F2937] tabular-nums">
-                          {med.dosage} · {med.frequency}
-                        </div>
-                        <div className="mt-0.5 font-mono text-xs text-[#6B7280] tabular-nums">
-                          {med.scheduledTimes.map(formatTime12h).join(', ')}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3.5 text-xs text-[#4B5563]">
-                        {med.prescribedBy || '—'}
-                      </td>
-                      <td className="px-4 py-3.5 text-right font-mono text-xs tabular-nums">
-                        <span className={lowStock ? 'font-semibold text-[#B45309]' : 'text-[#1F2937]'}>
-                          {med.remainingQuantity ?? 0} left
+              return (
+                <div
+                  key={med.id}
+                  className="flex flex-col justify-between gap-3 px-6 py-4 sm:flex-row sm:items-center"
+                >
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <p className={`font-bold text-[#1F2937] ${isElderly ? 'text-lg' : 'text-base'}`}>
+                        {med.name}
+                      </p>
+                      <span className="text-sm font-medium text-[#4B5563]">{med.dosage}</span>
+                      <StatusText
+                        variant={
+                          med.status === 'active'
+                            ? 'success'
+                            : med.status === 'paused'
+                              ? 'warning'
+                              : 'neutral'
+                        }
+                        label={med.status.charAt(0).toUpperCase() + med.status.slice(1)}
+                      />
+                    </div>
+                    <p className="mt-1 text-sm text-[#6B7280]">
+                      {med.frequency} · {med.scheduledTimes.map(formatTime12h).join(', ')}
+                      {typeof med.remainingQuantity === 'number' && (
+                        <span className={lowStock ? ' font-semibold text-[#B45309]' : ''}>
+                          {' '}
+                          · {med.remainingQuantity} left{lowStock ? ' (Refill soon)' : ''}
                         </span>
-                      </td>
-                      <td className="px-4 py-3.5">
-                        <StatusText
-                          variant={
-                            med.status === 'active'
-                              ? 'success'
-                              : med.status === 'paused'
-                                ? 'warning'
-                                : 'neutral'
-                          }
-                          label={med.status.charAt(0).toUpperCase() + med.status.slice(1)}
-                        />
-                      </td>
-                      <td className="px-6 py-3.5 text-right">
-                        {canEditMeds ? (
-                          <div className="inline-flex items-center gap-1">
-                            <button
-                              type="button"
-                              onClick={() => openEditModal(med)}
-                              aria-label={`Edit ${med.name}`}
-                              className="rounded-lg p-2 text-[#4B5563] hover:bg-[#F3F4F6] hover:text-[#1F2937]"
-                            >
-                              <Edit3 className="h-4 w-4" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteMedication(med)}
-                              aria-label={`Delete ${med.name}`}
-                              className="rounded-lg p-2 text-[#6B7280] hover:bg-red-50 hover:text-[#B91C1C]"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </div>
-                        ) : (
-                          <span className="text-xs text-[#9CA3AF]">View only</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                      )}
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setDetailMed(med)}
+                    className="min-h-[44px] shrink-0 rounded-xl border border-[#D1D5DB] bg-white px-4 text-sm font-semibold text-[#374151] hover:bg-[#F3F4F6]"
+                  >
+                    View Details
+                  </button>
+                </div>
+              );
+            })}
           </div>
         )}
       </section>
 
-      {/* Add / Edit Medication Modal */}
+      {/* Dose Slot Details Dialog */}
+      <Modal
+        open={Boolean(detailSlot)}
+        onClose={() => setDetailSlot(null)}
+        title={detailSlot ? detailSlot.med.name : 'Dose Details'}
+      >
+        {detailSlot && (
+          <div className="space-y-4 text-base text-[#374151]">
+            <p>
+              <span className="font-semibold">Time:</span> {formatTime12h(detailSlot.time)}
+            </p>
+            <p>
+              <span className="font-semibold">Dosage:</span> {detailSlot.med.dosage}
+            </p>
+            {detailSlot.med.instructions && (
+              <p>
+                <span className="font-semibold">Instructions:</span> {detailSlot.med.instructions}
+              </p>
+            )}
+            {(canAddMeds || canEditMeds) && (
+              <div className="flex flex-wrap justify-end gap-3 border-t border-[#E5E7EB] pt-4">
+                {detailSlot.log?.status !== 'skipped' && (
+                  <button
+                    type="button"
+                    onClick={() => handleDoseAction(detailSlot, 'skipped')}
+                    className="min-h-[44px] rounded-xl border border-[#D1D5DB] px-4 text-sm font-semibold text-[#374151]"
+                  >
+                    Skip Dose
+                  </button>
+                )}
+                {detailSlot.log?.status === 'taken' ? (
+                  <button
+                    type="button"
+                    onClick={() => handleDoseAction(detailSlot, 'pending')}
+                    className="min-h-[44px] rounded-xl border border-[#D1D5DB] px-4 text-sm font-semibold text-[#374151]"
+                  >
+                    Undo Taken
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handleDoseAction(detailSlot, 'taken')}
+                    className="min-h-[44px] rounded-xl bg-[#065F46] px-5 text-sm font-bold text-white hover:bg-[#047857]"
+                  >
+                    Mark as Taken
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
+
+      {/* Medicine Details Dialog */}
+      <Modal
+        open={Boolean(detailMed)}
+        onClose={() => setDetailMed(null)}
+        title={detailMed?.name || 'Medicine Details'}
+      >
+        {detailMed && (
+          <div className="space-y-4 text-base text-[#374151]">
+            <p>
+              <span className="font-semibold">Dosage:</span> {detailMed.dosage}
+            </p>
+            <p>
+              <span className="font-semibold">Schedule:</span> {detailMed.frequency} (
+              {detailMed.scheduledTimes.map(formatTime12h).join(', ')})
+            </p>
+            {detailMed.instructions && (
+              <p>
+                <span className="font-semibold">Instructions:</span> {detailMed.instructions}
+              </p>
+            )}
+            {detailMed.prescribedBy && (
+              <p>
+                <span className="font-semibold">Doctor:</span> {detailMed.prescribedBy}
+              </p>
+            )}
+            <p>
+              <span className="font-semibold">Pills Remaining:</span>{' '}
+              {detailMed.remainingQuantity ?? 0}
+            </p>
+
+            {canEditMeds && (
+              <div className="flex flex-wrap justify-between gap-3 border-t border-[#E5E7EB] pt-4">
+                <button
+                  type="button"
+                  onClick={() => handleDeleteMedication(detailMed)}
+                  className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl border border-red-200 px-4 text-sm font-semibold text-[#B91C1C] hover:bg-red-50"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  <span>Delete</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openEditModal(detailMed)}
+                  className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl bg-[#065F46] px-5 text-sm font-bold text-white hover:bg-[#047857]"
+                >
+                  <Edit3 className="h-4 w-4" />
+                  <span>Edit Medicine</span>
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
+
+      {/* AI Care Guide Modal */}
+      <Modal
+        open={guideModalOpen}
+        onClose={() => setGuideModalOpen(false)}
+        title="Daily Medicine Guide"
+        subtitle={`Simple summary for ${activeCircle.patientName}`}
+      >
+        {aiGuideLoading ? (
+          <div className="py-10 text-center text-sm text-[#6B7280]">Preparing care guide...</div>
+        ) : aiGuideError ? (
+          <p className="text-sm text-[#B91C1C]">{aiGuideError}</p>
+        ) : aiGuide ? (
+          <div className="space-y-4 text-sm text-[#374151]">
+            <p className="text-base leading-relaxed text-[#1F2937]">{aiGuide.dailyOverview}</p>
+            <div className="space-y-3">
+              {aiGuide.timeBlocks.map((block, i) => (
+                <div key={i} className="rounded-xl border border-[#E5E7EB] bg-[#F9FAFB] p-4">
+                  <h3 className="font-display text-base font-bold text-[#065F46]">{block.period}</h3>
+                  <ul className="mt-1.5 list-disc space-y-1 pl-5">
+                    {block.items.map((item, j) => (
+                      <li key={j}>{item}</li>
+                    ))}
+                  </ul>
+                  <p className="mt-2 text-xs text-[#6B7280]">{block.mealTip}</p>
+                </div>
+              ))}
+            </div>
+            <p className="border-t border-[#E5E7EB] pt-3 text-xs text-[#6B7280]">
+              {aiGuide.disclaimer}
+            </p>
+          </div>
+        ) : null}
+      </Modal>
+
+      {/* Add / Edit Medicine Modal */}
       <Modal
         open={modalOpen}
         onClose={() => setModalOpen(false)}
-        title={editingMed ? `Edit ${editingMed.name}` : 'Add Medication'}
-        subtitle="Changes sync immediately to all Care Circle members."
+        title={editingMed ? `Edit ${editingMed.name}` : 'Add Medicine'}
       >
         <form onSubmit={handleSaveMedication} className="space-y-4">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <label htmlFor="med-name" className="block text-sm font-medium text-[#1F2937]">
-                Medication Name *
+              <label htmlFor="med-name" className="block text-sm font-semibold text-[#1F2937]">
+                Medicine Name *
               </label>
               <input
                 id="med-name"
                 type="text"
                 required
-                maxLength={120}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="e.g. Lisinopril"
-                className="mt-1 w-full rounded-lg border border-[#D1D5DB] px-3 py-2 text-sm focus:border-[#065F46] focus:outline-none"
+                className="mt-1 w-full rounded-xl border border-[#D1D5DB] px-3.5 py-2.5 text-sm"
               />
             </div>
             <div>
-              <label htmlFor="med-dosage" className="block text-sm font-medium text-[#1F2937]">
-                Dosage *
+              <label htmlFor="med-dosage" className="block text-sm font-semibold text-[#1F2937]">
+                Dosage * {editingMed && isCaretaker && <span className="text-xs text-[#6B7280]">(Locked)</span>}
               </label>
               <input
                 id="med-dosage"
                 type="text"
                 required
-                maxLength={80}
+                disabled={Boolean(editingMed && isCaretaker)}
                 value={dosage}
                 onChange={(e) => setDosage(e.target.value)}
                 placeholder="e.g. 10 mg"
-                className="mt-1 w-full rounded-lg border border-[#D1D5DB] px-3 py-2 text-sm focus:border-[#065F46] focus:outline-none"
+                className={`mt-1 w-full rounded-xl border px-3.5 py-2.5 text-sm ${
+                  editingMed && isCaretaker
+                    ? 'cursor-not-allowed border-[#E5E7EB] bg-[#F3F4F6] text-[#6B7280]'
+                    : 'border-[#D1D5DB]'
+                }`}
               />
             </div>
           </div>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <label htmlFor="med-freq" className="block text-sm font-medium text-[#1F2937]">
-                Frequency
+              <label htmlFor="med-freq" className="block text-sm font-semibold text-[#1F2937]">
+                How Often
               </label>
               <input
                 id="med-freq"
                 type="text"
-                maxLength={80}
                 value={frequency}
                 onChange={(e) => setFrequency(e.target.value)}
                 placeholder="Once daily"
-                className="mt-1 w-full rounded-lg border border-[#D1D5DB] px-3 py-2 text-sm focus:border-[#065F46] focus:outline-none"
+                className="mt-1 w-full rounded-xl border border-[#D1D5DB] px-3.5 py-2.5 text-sm"
               />
             </div>
             <div>
-              <label htmlFor="med-times" className="block text-sm font-medium text-[#1F2937]">
-                Scheduled Times (24h, comma-separated)
+              <label htmlFor="med-times" className="block text-sm font-semibold text-[#1F2937]">
+                Times (24h, e.g. 08:00, 20:00)
               </label>
               <input
                 id="med-times"
@@ -643,101 +728,82 @@ export function MedicationsView() {
                 value={timesInput}
                 onChange={(e) => setTimesInput(e.target.value)}
                 placeholder="08:00, 20:00"
-                className="mt-1 w-full rounded-lg border border-[#D1D5DB] px-3 py-2 font-mono text-sm focus:border-[#065F46] focus:outline-none"
+                className="mt-1 w-full rounded-xl border border-[#D1D5DB] px-3.5 py-2.5 font-mono text-sm"
               />
             </div>
           </div>
 
           <div>
-            <label htmlFor="med-inst" className="block text-sm font-medium text-[#1F2937]">
-              Administration Instructions
+            <label htmlFor="med-inst" className="block text-sm font-semibold text-[#1F2937]">
+              Instructions
             </label>
             <textarea
               id="med-inst"
               rows={2}
-              maxLength={400}
               value={instructions}
               onChange={(e) => setInstructions(e.target.value)}
-              placeholder="Take with breakfast and a full glass of water."
-              className="mt-1 w-full rounded-lg border border-[#D1D5DB] px-3 py-2 text-sm focus:border-[#065F46] focus:outline-none"
+              placeholder="Take with breakfast and water."
+              className="mt-1 w-full rounded-xl border border-[#D1D5DB] p-3 text-sm"
             />
           </div>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <div>
-              <label htmlFor="med-doc" className="block text-sm font-medium text-[#1F2937]">
-                Prescribing Doctor
+              <label htmlFor="med-doc" className="block text-sm font-semibold text-[#1F2937]">
+                Doctor
               </label>
               <input
                 id="med-doc"
                 type="text"
-                maxLength={120}
                 value={prescribedBy}
                 onChange={(e) => setPrescribedBy(e.target.value)}
-                placeholder="Dr. Elena Rostova"
-                className="mt-1 w-full rounded-lg border border-[#D1D5DB] px-3 py-2 text-sm focus:border-[#065F46] focus:outline-none"
+                className="mt-1 w-full rounded-xl border border-[#D1D5DB] px-3.5 py-2.5 text-sm"
               />
             </div>
             <div>
-              <label htmlFor="med-qty" className="block text-sm font-medium text-[#1F2937]">
-                Doses Remaining
+              <label htmlFor="med-qty" className="block text-sm font-semibold text-[#1F2937]">
+                Pills Left
               </label>
               <input
                 id="med-qty"
                 type="number"
                 min={0}
-                max={5000}
                 value={remainingQuantity}
                 onChange={(e) => setRemainingQuantity(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-[#D1D5DB] px-3 py-2 font-mono text-sm tabular-nums focus:border-[#065F46] focus:outline-none"
+                className="mt-1 w-full rounded-xl border border-[#D1D5DB] px-3.5 py-2.5 font-mono text-sm"
               />
             </div>
             <div>
-              <label htmlFor="med-thresh" className="block text-sm font-medium text-[#1F2937]">
-                Refill Alert At
+              <label htmlFor="med-status" className="block text-sm font-semibold text-[#1F2937]">
+                Status
               </label>
-              <input
-                id="med-thresh"
-                type="number"
-                min={0}
-                max={500}
-                value={refillThreshold}
-                onChange={(e) => setRefillThreshold(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-[#D1D5DB] px-3 py-2 font-mono text-sm tabular-nums focus:border-[#065F46] focus:outline-none"
-              />
+              <select
+                id="med-status"
+                value={status}
+                onChange={(e) => setStatus(e.target.value as MedicationStatus)}
+                className="mt-1 w-full rounded-xl border border-[#D1D5DB] bg-white px-3 py-2.5 text-sm"
+              >
+                <option value="active">Active</option>
+                <option value="paused">Paused</option>
+                <option value="completed">Completed</option>
+              </select>
             </div>
-          </div>
-
-          <div>
-            <label htmlFor="med-status" className="block text-sm font-medium text-[#1F2937]">
-              Status
-            </label>
-            <select
-              id="med-status"
-              value={status}
-              onChange={(e) => setStatus(e.target.value as MedicationStatus)}
-              className="mt-1 w-full rounded-lg border border-[#D1D5DB] bg-white px-3 py-2 text-sm focus:border-[#065F46] focus:outline-none"
-            >
-              <option value="active">Active</option>
-              <option value="paused">Paused</option>
-              <option value="completed">Completed</option>
-            </select>
           </div>
 
           <div className="flex justify-end gap-3 border-t border-[#E5E7EB] pt-4">
             <button
               type="button"
               onClick={() => setModalOpen(false)}
-              className="rounded-lg border border-[#D1D5DB] bg-white px-4 py-2 text-sm font-medium text-[#374151] hover:bg-[#F3F4F6]"
+              className="min-h-[44px] rounded-xl border border-[#D1D5DB] px-4 text-sm font-medium text-[#374151]"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={submitting}
-              className="rounded-lg bg-[#065F46] px-5 py-2 text-sm font-semibold text-white hover:bg-[#047857] disabled:opacity-60"
+              className="min-h-[44px] rounded-xl bg-[#065F46] px-5 text-sm font-bold text-white hover:bg-[#047857] disabled:opacity-60"
             >
-              {submitting ? 'Saving...' : editingMed ? 'Save Changes' : 'Add Medication'}
+              {submitting ? 'Saving...' : editingMed ? 'Save Changes' : 'Add Medicine'}
             </button>
           </div>
         </form>

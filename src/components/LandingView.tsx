@@ -1,5 +1,4 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { motion } from 'motion/react';
 import {
   ArrowRight,
   Bell,
@@ -302,12 +301,7 @@ export function LandingView({ onNavigate, isAuthenticated = false }: LandingView
         {/* 2–6. Hero Section with Headline, Subtitle, CTAs & Interactive Dashboard Preview */}
         <section id="home" className="relative overflow-hidden pt-12 pb-16 lg:pt-18 lg:pb-20">
           <div className="mx-auto grid max-w-7xl grid-cols-1 items-center gap-12 px-6 lg:grid-cols-12">
-            <motion.div
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
-              className="lg:col-span-6"
-            >
+            <div className="lg:col-span-6">
               <p className="text-xs font-semibold tracking-wide text-[#0D9488]">
                 Elderly Healthcare Ecosystem · Built for Care Circles
               </p>
@@ -327,7 +321,7 @@ export function LandingView({ onNavigate, isAuthenticated = false }: LandingView
                 <button
                   type="button"
                   onClick={() => onNavigate(primaryCtaTarget)}
-                  className="inline-flex min-h-[46px] items-center gap-2 rounded-lg bg-gradient-to-r from-[#064E3B] to-[#065F46] px-6 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:from-[#065F46] hover:to-[#047857] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#065F46] whitespace-nowrap shrink-0"
+                  className="inline-flex min-h-[46px] items-center gap-2 rounded-lg bg-gradient-to-r from-[#064E3B] to-[#065F46] px-6 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:from-[#065F46] hover:to-[#047857] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#065F46] whitespace-nowrap shrink-0"
                 >
                   <span>{isAuthenticated ? 'Open Workspace' : 'Get Started'}</span>
                   <ArrowRight className="h-4 w-4" />
@@ -350,16 +344,11 @@ export function LandingView({ onNavigate, isAuthenticated = false }: LandingView
                 <span aria-hidden="true">·</span>
                 <span>Server-Side Gemini Guidance</span>
               </div>
-            </motion.div>
+            </div>
 
-            <motion.div
-              initial={{ opacity: 0, y: 16 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.55, delay: 0.08, ease: [0.16, 1, 0.3, 1] }}
-              className="lg:col-span-6"
-            >
+            <div className="lg:col-span-6">
               <HeroDashboardPreview onGetStarted={() => onNavigate(primaryCtaTarget)} />
-            </motion.div>
+            </div>
           </div>
         </section>
 

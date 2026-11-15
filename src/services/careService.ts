@@ -24,17 +24,23 @@ import {
 } from '../lib/utils';
 import {
   AccountType,
+  ActivityRecordType,
   Appointment,
   AppointmentStatus,
   CareCircle,
   CareMessage,
   CareNotification,
   CareRoutine,
+  CareTask,
+  CareTaskCategory,
+  CareTaskPriority,
+  CareTaskStatus,
   CircleInvite,
   CircleMember,
   DoseStatus,
   HealthRecord,
   Medication,
+  MedicationAssistanceMode,
   MedicationLog,
   MedicationStatus,
   MemberPermissions,
@@ -179,6 +185,7 @@ export async function createCareCircle(params: {
   bloodType?: string;
   allergies?: string;
   primaryPhysician?: string;
+  emergencyContact?: string;
   relation?: string;
 }): Promise<string> {
   const circleId = generateId('circle');
@@ -195,6 +202,7 @@ export async function createCareCircle(params: {
       bloodType: clipString(params.bloodType, 16),
       allergies: clipString(params.allergies, 500),
       primaryPhysician: clipString(params.primaryPhysician, 120),
+      emergencyContact: clipString(params.emergencyContact, 160),
       ownerId: params.ownerUid,
       memberIds: [params.ownerUid],
       createdAt: serverTimestamp(),
@@ -237,17 +245,37 @@ export async function updateCareCircleDetails(
     bloodType?: string;
     allergies?: string;
     primaryPhysician?: string;
+    emergencyContact?: string;
   },
 ): Promise<void> {
   const path = `careCircles/${circleId}`;
   try {
-    await updateDoc(doc(db, 'careCircles', circleId), {
+    const payload: Record<string, unknown> = {
       name: clipString(updates.name, 120),
       patientName: clipString(updates.patientName, 120),
       patientAge: Math.max(0, Math.min(130, Math.round(updates.patientAge))),
       bloodType: clipString(updates.bloodType, 16),
       allergies: clipString(updates.allergies, 500),
       primaryPhysician: clipString(updates.primaryPhysician, 120),
+      updatedAt: serverTimestamp(),
+    };
+    if (updates.emergencyContact !== undefined) {
+      payload.emergencyContact = clipString(updates.emergencyContact, 160);
+    }
+    await updateDoc(doc(db, 'careCircles', circleId), payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function updateCareCircleEmergencyContact(
+  circleId: string,
+  emergencyContact: string,
+): Promise<void> {
+  const path = `careCircles/${circleId}`;
+  try {
+    await updateDoc(doc(db, 'careCircles', circleId), {
+      emergencyContact: clipString(emergencyContact, 160),
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
@@ -567,6 +595,8 @@ export async function syncSubcollectionMemberIds(circleId: string, memberIds: st
     'routineLogs',
     'messages',
     'notifications',
+    'tasks',
+    'activityLogs',
   ] as const;
 
   const sortedTarget = [...memberIds].sort().join(',');
@@ -584,7 +614,7 @@ export async function syncSubcollectionMemberIds(circleId: string, memberIds: st
 
       const batch = writeBatch(db);
       for (const docSnap of needsSync) {
-        if (sub === 'messages') {
+        if (sub === 'messages' || sub === 'activityLogs') {
           batch.update(docSnap.ref, { memberIds });
         } else {
           batch.update(docSnap.ref, { memberIds, updatedAt: serverTimestamp() });
@@ -594,6 +624,43 @@ export async function syncSubcollectionMemberIds(circleId: string, memberIds: st
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, colPath);
     }
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Immutable Care Activity Audit Logs
+// -----------------------------------------------------------------------------
+export async function createActivityLog(params: {
+  circleId: string;
+  memberIds: string[];
+  userId: string;
+  actorName: string;
+  actorRole: MemberRole;
+  action: string;
+  recordId: string;
+  recordType: ActivityRecordType;
+  detail?: string;
+}): Promise<string> {
+  const id = generateId('act');
+  const path = `careCircles/${params.circleId}/activityLogs/${id}`;
+  try {
+    await setDoc(doc(db, 'careCircles', params.circleId, 'activityLogs', id), {
+      id,
+      circleId: params.circleId,
+      elderlyProfileId: params.circleId,
+      userId: params.userId,
+      actorName: clipString(params.actorName, 100) || 'Care Member',
+      actorRole: params.actorRole,
+      action: clipString(params.action, 160) || 'Performed care action',
+      recordId: clipString(params.recordId, 128) || id,
+      recordType: params.recordType,
+      detail: clipString(params.detail, 400),
+      memberIds: params.memberIds,
+      timestamp: serverTimestamp(),
+    });
+    return id;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
   }
 }
 
@@ -668,6 +735,8 @@ export async function createMedication(params: {
   circleId: string;
   memberIds: string[];
   createdByUid: string;
+  actorName?: string;
+  actorRole?: MemberRole;
   name: string;
   dosage: string;
   frequency: string;
@@ -698,6 +767,19 @@ export async function createMedication(params: {
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
+
+    await createActivityLog({
+      circleId: params.circleId,
+      memberIds: params.memberIds,
+      userId: params.createdByUid,
+      actorName: params.actorName || 'Care Member',
+      actorRole: params.actorRole ?? 'patient',
+      action: `Added medication: ${params.name} (${params.dosage})`,
+      recordId: id,
+      recordType: 'medication',
+      detail: `${params.frequency} · Times: ${params.scheduledTimes.slice(0, 6).join(', ')}`,
+    });
+
     return id;
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
@@ -709,7 +791,7 @@ export async function updateMedication(
   medicationId: string,
   updates: {
     name: string;
-    dosage: string;
+    dosage?: string;
     frequency: string;
     scheduledTimes: string[];
     instructions?: string;
@@ -718,12 +800,17 @@ export async function updateMedication(
     refillThreshold?: number;
     status: MedicationStatus;
   },
+  actorMeta?: {
+    memberIds: string[];
+    uid: string;
+    name: string;
+    role: MemberRole;
+  },
 ): Promise<void> {
   const path = `careCircles/${circleId}/medications/${medicationId}`;
   try {
-    await updateDoc(doc(db, 'careCircles', circleId, 'medications', medicationId), {
+    const payload: Record<string, unknown> = {
       name: clipString(updates.name, 120),
-      dosage: clipString(updates.dosage, 80),
       frequency: clipString(updates.frequency, 80),
       scheduledTimes: updates.scheduledTimes.slice(0, 6),
       instructions: clipString(updates.instructions, 400),
@@ -732,7 +819,28 @@ export async function updateMedication(
       refillThreshold: Math.max(0, Math.min(500, Number(updates.refillThreshold ?? 5))),
       status: updates.status,
       updatedAt: serverTimestamp(),
-    });
+    };
+
+    // Caretakers are strictly prevented from modifying prescribed medication dosages
+    if (actorMeta?.role !== 'caretaker' && updates.dosage !== undefined) {
+      payload.dosage = clipString(updates.dosage, 80);
+    }
+
+    await updateDoc(doc(db, 'careCircles', circleId, 'medications', medicationId), payload);
+
+    if (actorMeta) {
+      await createActivityLog({
+        circleId,
+        memberIds: actorMeta.memberIds,
+        userId: actorMeta.uid,
+        actorName: actorMeta.name,
+        actorRole: actorMeta.role,
+        action: `Updated medication schedule: ${updates.name}`,
+        recordId: medicationId,
+        recordType: 'medication',
+        detail: `${updates.frequency} · Status: ${updates.status}`,
+      });
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -755,19 +863,32 @@ export async function logMedicationDose(params: {
   dateKey: string;
   scheduledTime: string;
   status: DoseStatus;
+  assistanceMode?: MedicationAssistanceMode;
   notes?: string;
   uid: string;
   userName: string;
+  actorRole?: MemberRole;
 }): Promise<void> {
   const safeTime = params.scheduledTime.replace(/[^0-9A-Za-z]/g, '');
   const logId = params.existingLog?.id ?? `medlog_${params.medication.id}_${params.dateKey}_${safeTime}`.slice(0, 128);
   const path = `careCircles/${params.circleId}/medicationLogs/${logId}`;
+  const resolvedRole: MemberRole = params.actorRole ?? 'patient';
+  const resolvedMode: MedicationAssistanceMode =
+    params.assistanceMode ?? (resolvedRole === 'patient' ? 'self' : 'assisted');
+
+  const modeVerb =
+    resolvedMode === 'administered'
+      ? 'administered'
+      : resolvedMode === 'assisted'
+        ? 'assisted'
+        : 'taken';
 
   try {
     const batch = writeBatch(db);
     if (params.existingLog) {
       batch.update(doc(db, 'careCircles', params.circleId, 'medicationLogs', logId), {
         status: params.status,
+        assistanceMode: resolvedMode,
         notes: clipString(params.notes, 300),
         loggedByUid: params.uid,
         loggedByName: clipString(params.userName, 100),
@@ -783,6 +904,7 @@ export async function logMedicationDose(params: {
         dateKey: params.dateKey,
         scheduledTime: clipString(params.scheduledTime, 10),
         status: params.status,
+        assistanceMode: resolvedMode,
         notes: clipString(params.notes, 300),
         loggedByUid: params.uid,
         loggedByName: clipString(params.userName, 100),
@@ -796,36 +918,66 @@ export async function logMedicationDose(params: {
     const currentQty = params.medication.remainingQuantity ?? 0;
     const threshold = params.medication.refillThreshold ?? 7;
 
+    let nextQtyAfterTake = currentQty;
     if (!wasTaken && params.status === 'taken' && currentQty > 0) {
-      const nextQty = Math.max(0, currentQty - 1);
+      nextQtyAfterTake = Math.max(0, currentQty - 1);
       batch.update(doc(db, 'careCircles', params.circleId, 'medications', params.medication.id), {
-        remainingQuantity: nextQty,
+        remainingQuantity: nextQtyAfterTake,
         updatedAt: serverTimestamp(),
       });
-      await batch.commit();
-
-      if (nextQty <= threshold) {
-        await createNotification({
-          circleId: params.circleId,
-          memberIds: params.memberIds,
-          createdByUid: params.uid,
-          title: `Refill needed soon: ${params.medication.name}`,
-          detail: `${nextQty} doses remaining (threshold ${threshold}). Logged by ${params.userName}.`,
-          severity: 'warning',
-          eventType: 'medication',
-        });
-      }
-      return;
     }
 
     await batch.commit();
 
-    if (params.status === 'skipped') {
+    const actionText =
+      params.status === 'taken'
+        ? resolvedMode === 'administered'
+          ? `Administered ${params.medication.name} (${params.medication.dosage})`
+          : resolvedMode === 'assisted'
+            ? `Assisted dose: ${params.medication.name} (${params.medication.dosage})`
+            : `Marked ${params.medication.name} (${params.medication.dosage}) as taken`
+        : params.status === 'skipped'
+          ? `Recorded skipped dose: ${params.medication.name} (${params.medication.dosage})`
+          : `Reset ${params.medication.name} (${params.medication.dosage}) dose to pending`;
+
+    await createActivityLog({
+      circleId: params.circleId,
+      memberIds: params.memberIds,
+      userId: params.uid,
+      actorName: params.userName,
+      actorRole: resolvedRole,
+      action: actionText,
+      recordId: logId,
+      recordType: 'medication_log',
+      detail: `Scheduled ${params.scheduledTime} on ${params.dateKey}${params.notes ? ` · ${params.notes}` : ''}`,
+    });
+
+    if (!wasTaken && params.status === 'taken' && currentQty > 0 && nextQtyAfterTake <= threshold) {
       await createNotification({
         circleId: params.circleId,
         memberIds: params.memberIds,
         createdByUid: params.uid,
-        title: `Dose skipped: ${params.medication.name} (${params.scheduledTime})`,
+        title: `Refill needed soon: ${params.medication.name}`,
+        detail: `${nextQtyAfterTake} doses remaining (threshold ${threshold}). Dose ${modeVerb} and logged by ${params.userName}.`,
+        severity: 'warning',
+        eventType: 'medication',
+      });
+    } else if (params.status === 'taken') {
+      await createNotification({
+        circleId: params.circleId,
+        memberIds: params.memberIds,
+        createdByUid: params.uid,
+        title: `Medication ${modeVerb}: ${params.medication.name} (${params.medication.dosage})`,
+        detail: `${params.scheduledTime} dose logged as ${modeVerb} by ${params.userName}${params.notes ? ` — ${params.notes}` : '.'}`,
+        severity: 'info',
+        eventType: 'medication',
+      });
+    } else if (params.status === 'skipped') {
+      await createNotification({
+        circleId: params.circleId,
+        memberIds: params.memberIds,
+        createdByUid: params.uid,
+        title: `Medication missed/skipped: ${params.medication.name} (${params.scheduledTime})`,
         detail: `${params.userName} marked the ${params.scheduledTime} dose as skipped${params.notes ? `: ${params.notes}` : '.'}`,
         severity: 'warning',
         eventType: 'medication',
@@ -844,6 +996,7 @@ export async function createAppointment(params: {
   memberIds: string[];
   createdByUid: string;
   createdByName: string;
+  actorRole?: MemberRole;
   title: string;
   doctorName: string;
   specialty?: string;
@@ -887,6 +1040,18 @@ export async function createAppointment(params: {
       eventType: 'appointment',
     });
 
+    await createActivityLog({
+      circleId: params.circleId,
+      memberIds: params.memberIds,
+      userId: params.createdByUid,
+      actorName: params.createdByName,
+      actorRole: params.actorRole ?? 'patient',
+      action: `Scheduled appointment: ${params.title}`,
+      recordId: id,
+      recordType: 'appointment',
+      detail: `With ${params.doctorName} on ${params.appointmentDate} at ${params.appointmentTime}`,
+    });
+
     return id;
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
@@ -909,6 +1074,12 @@ export async function updateAppointment(
     outcomeNotes?: string;
     status: AppointmentStatus;
   },
+  notificationMeta?: {
+    memberIds: string[];
+    actorUid: string;
+    actorName: string;
+    actorRole?: MemberRole;
+  },
 ): Promise<void> {
   const path = `careCircles/${circleId}/appointments/${appointmentId}`;
   try {
@@ -926,6 +1097,47 @@ export async function updateAppointment(
       status: updates.status,
       updatedAt: serverTimestamp(),
     });
+
+    if (notificationMeta) {
+      if (updates.status === 'completed') {
+        await createNotification({
+          circleId,
+          memberIds: notificationMeta.memberIds,
+          createdByUid: notificationMeta.actorUid,
+          title: `Appointment completed: ${updates.title}`,
+          detail: `Visit with ${updates.doctorName} on ${updates.appointmentDate} marked completed by ${notificationMeta.actorName}.`,
+          severity: 'info',
+          eventType: 'appointment',
+        });
+      } else if (updates.status === 'cancelled') {
+        await createNotification({
+          circleId,
+          memberIds: notificationMeta.memberIds,
+          createdByUid: notificationMeta.actorUid,
+          title: `Appointment cancelled: ${updates.title}`,
+          detail: `Visit with ${updates.doctorName} on ${updates.appointmentDate} at ${updates.appointmentTime} was cancelled by ${notificationMeta.actorName}.`,
+          severity: 'warning',
+          eventType: 'appointment',
+        });
+      }
+
+      await createActivityLog({
+        circleId,
+        memberIds: notificationMeta.memberIds,
+        userId: notificationMeta.actorUid,
+        actorName: notificationMeta.actorName,
+        actorRole: notificationMeta.actorRole ?? 'patient',
+        action:
+          updates.status === 'completed'
+            ? `Completed appointment: ${updates.title}`
+            : updates.status === 'cancelled'
+              ? `Cancelled appointment: ${updates.title}`
+              : `Updated appointment: ${updates.title}`,
+        recordId: appointmentId,
+        recordType: 'appointment',
+        detail: `${updates.doctorName} · ${updates.appointmentDate}${updates.outcomeNotes ? ` · ${updates.outcomeNotes}` : ''}`,
+      });
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -941,13 +1153,14 @@ export async function deleteAppointment(circleId: string, appointmentId: string)
 }
 
 // -----------------------------------------------------------------------------
-// Health Records
+// Health Records & Unusual Observations
 // -----------------------------------------------------------------------------
 export async function createHealthRecord(params: {
   circleId: string;
   memberIds: string[];
   createdByUid: string;
   createdByName: string;
+  actorRole?: MemberRole;
   recordType: RecordType;
   title: string;
   recordedDate: string;
@@ -982,17 +1195,133 @@ export async function createHealthRecord(params: {
         circleId: params.circleId,
         memberIds: params.memberIds,
         createdByUid: params.createdByUid,
-        title: `Flagged health record: ${params.title}`,
+        title: `Flagged healthcare update: ${params.title}`,
         detail: `${params.metricValue ? `${params.metricValue} ${params.metricUnit ?? ''} — ` : ''}${params.summary || 'Marked for care team review'} (${params.createdByName}).`,
         severity: 'urgent',
         eventType: 'record',
       });
+    } else {
+      await createNotification({
+        circleId: params.circleId,
+        memberIds: params.memberIds,
+        createdByUid: params.createdByUid,
+        title: `New healthcare update: ${params.title}`,
+        detail: `${params.metricValue ? `${params.metricValue} ${params.metricUnit ?? ''} · ` : ''}Recorded by ${params.createdByName}.`,
+        severity: 'info',
+        eventType: 'record',
+      });
     }
+
+    await createActivityLog({
+      circleId: params.circleId,
+      memberIds: params.memberIds,
+      userId: params.createdByUid,
+      actorName: params.createdByName,
+      actorRole: params.actorRole ?? 'patient',
+      action: params.flagged ? `Flagged health record: ${params.title}` : `Added health record: ${params.title}`,
+      recordId: id,
+      recordType: 'health_record',
+      detail: `${params.metricValue ? `${params.metricValue} ${params.metricUnit ?? ''}`.trim() : params.recordType} (${params.recordedDate})`,
+    });
 
     return id;
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
   }
+}
+
+export async function reportUnusualObservation(params: {
+  circleId: string;
+  memberIds: string[];
+  canCreateHealthRecord: boolean;
+  observerUid: string;
+  observerName: string;
+  observerRole: MemberRole;
+  observationTitle: string;
+  observedDate: string;
+  urgency: 'warning' | 'urgent';
+  vitalReading?: string;
+  vitalUnit?: string;
+  summary: string;
+}): Promise<string> {
+  const summaryText = clipString(params.summary, 1100);
+  const titleText = clipString(params.observationTitle, 140);
+  let targetRecordId = '';
+
+  if (params.canCreateHealthRecord) {
+    const recId = generateId('rec');
+    const recPath = `careCircles/${params.circleId}/healthRecords/${recId}`;
+    try {
+      await setDoc(doc(db, 'careCircles', params.circleId, 'healthRecords', recId), {
+        id: recId,
+        circleId: params.circleId,
+        recordType: 'clinical_note',
+        title: titleText,
+        recordedDate: params.observedDate,
+        providerName: clipString(params.observerName, 120),
+        metricValue: clipString(params.vitalReading, 80),
+        metricUnit: clipString(params.vitalUnit, 40),
+        summary: summaryText,
+        flagged: true,
+        createdByUid: params.observerUid,
+        memberIds: params.memberIds,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      targetRecordId = recId;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, recPath);
+    }
+  }
+
+  const msgId = generateId('msg');
+  const msgPath = `careCircles/${params.circleId}/messages/${msgId}`;
+  try {
+    const readingPrefix = params.vitalReading
+      ? ` [Measurement: ${params.vitalReading}${params.vitalUnit ? ` ${params.vitalUnit}` : ''}]`
+      : '';
+    await setDoc(doc(db, 'careCircles', params.circleId, 'messages', msgId), {
+      id: msgId,
+      circleId: params.circleId,
+      senderUid: params.observerUid,
+      senderName: clipString(params.observerName, 100),
+      senderRole: params.observerRole,
+      category: 'alert',
+      body: clipString(`Unusual Observation — ${titleText}${readingPrefix}: ${summaryText}`, 1500),
+      urgent: params.urgency === 'urgent',
+      memberIds: params.memberIds,
+      createdAt: serverTimestamp(),
+    });
+    if (!targetRecordId) {
+      targetRecordId = msgId;
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, msgPath);
+  }
+
+  await createNotification({
+    circleId: params.circleId,
+    memberIds: params.memberIds,
+    createdByUid: params.observerUid,
+    title: `Unusual observation reported: ${titleText}`,
+    detail: `${params.vitalReading ? `${params.vitalReading} ${params.vitalUnit ?? ''} — ` : ''}${summaryText} (${params.observerName})`,
+    severity: params.urgency,
+    eventType: params.canCreateHealthRecord ? 'record' : 'message',
+  });
+
+  await createActivityLog({
+    circleId: params.circleId,
+    memberIds: params.memberIds,
+    userId: params.observerUid,
+    actorName: params.observerName,
+    actorRole: params.observerRole,
+    action: `Reported unusual observation: ${titleText}`,
+    recordId: targetRecordId,
+    recordType: 'observation',
+    detail: `${params.urgency.toUpperCase()}${params.vitalReading ? ` · ${params.vitalReading} ${params.vitalUnit ?? ''}`.trim() : ''} · ${summaryText}`,
+  });
+
+  return targetRecordId;
 }
 
 export async function updateHealthRecord(
@@ -1008,6 +1337,12 @@ export async function updateHealthRecord(
     summary?: string;
     flagged: boolean;
   },
+  actorMeta?: {
+    memberIds: string[];
+    uid: string;
+    name: string;
+    role: MemberRole;
+  },
 ): Promise<void> {
   const path = `careCircles/${circleId}/healthRecords/${recordId}`;
   try {
@@ -1022,6 +1357,20 @@ export async function updateHealthRecord(
       flagged: updates.flagged,
       updatedAt: serverTimestamp(),
     });
+
+    if (actorMeta) {
+      await createActivityLog({
+        circleId,
+        memberIds: actorMeta.memberIds,
+        userId: actorMeta.uid,
+        actorName: actorMeta.name,
+        actorRole: actorMeta.role,
+        action: `Updated health record: ${updates.title}`,
+        recordId,
+        recordType: 'health_record',
+        detail: `${updates.metricValue ? `${updates.metricValue} ${updates.metricUnit ?? ''}`.trim() : updates.recordType} (${updates.recordedDate})`,
+      });
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -1043,6 +1392,8 @@ export async function createCareRoutine(params: {
   circleId: string;
   memberIds: string[];
   createdByUid: string;
+  createdByName?: string;
+  actorRole?: MemberRole;
   title: string;
   category: RoutineCategory;
   targetTime: string;
@@ -1064,6 +1415,21 @@ export async function createCareRoutine(params: {
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
+
+    if (params.createdByName) {
+      await createActivityLog({
+        circleId: params.circleId,
+        memberIds: params.memberIds,
+        userId: params.createdByUid,
+        actorName: params.createdByName,
+        actorRole: params.actorRole ?? 'patient',
+        action: `Created daily care routine: ${params.title}`,
+        recordId: id,
+        recordType: 'routine',
+        detail: `${params.category} · Target ${params.targetTime}`,
+      });
+    }
+
     return id;
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
@@ -1114,6 +1480,7 @@ export async function toggleRoutineCompletion(params: {
   completed: boolean;
   uid: string;
   userName: string;
+  actorRole?: MemberRole;
 }): Promise<void> {
   const logId = params.existingLog?.id ?? `routlog_${params.routine.id}_${params.dateKey}`.slice(0, 128);
   const path = `careCircles/${params.circleId}/routineLogs/${logId}`;
@@ -1139,8 +1506,180 @@ export async function toggleRoutineCompletion(params: {
         updatedAt: serverTimestamp(),
       });
     }
+
+    await createActivityLog({
+      circleId: params.circleId,
+      memberIds: params.memberIds,
+      userId: params.uid,
+      actorName: params.userName,
+      actorRole: params.actorRole ?? 'caretaker',
+      action: params.completed
+        ? `Completed daily routine: ${params.routine.title}`
+        : `Reopened daily routine: ${params.routine.title}`,
+      recordId: logId,
+      recordType: 'routine',
+      detail: `${params.routine.category} · ${params.dateKey}`,
+    });
+
+    if (params.completed) {
+      await createNotification({
+        circleId: params.circleId,
+        memberIds: params.memberIds,
+        createdByUid: params.uid,
+        title: `Routine completed: ${params.routine.title}`,
+        detail: `${params.userName} logged ${params.routine.category} routine completion for ${params.dateKey}.`,
+        severity: 'info',
+        eventType: 'member',
+      });
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Daily Care Tasks (Caretaker Task Management System)
+// -----------------------------------------------------------------------------
+export async function createCareTask(params: {
+  circleId: string;
+  memberIds: string[];
+  title: string;
+  category: CareTaskCategory;
+  dueDate: string;
+  dueTime: string;
+  priority: CareTaskPriority;
+  notes?: string;
+  assignedToUid?: string;
+  assignedToName?: string;
+  createdByUid: string;
+  createdByName: string;
+  actorRole: MemberRole;
+}): Promise<string> {
+  const id = generateId('task');
+  const path = `careCircles/${params.circleId}/tasks/${id}`;
+  try {
+    await setDoc(doc(db, 'careCircles', params.circleId, 'tasks', id), {
+      id,
+      circleId: params.circleId,
+      title: clipString(params.title, 140),
+      category: params.category,
+      dueDate: params.dueDate,
+      dueTime: clipString(params.dueTime, 10),
+      priority: params.priority,
+      status: 'pending',
+      notes: clipString(params.notes, 500),
+      assignedToUid: clipString(params.assignedToUid, 128),
+      assignedToName: clipString(params.assignedToName, 100),
+      createdByUid: params.createdByUid,
+      createdByName: clipString(params.createdByName, 100),
+      completedByUid: '',
+      completedByName: '',
+      memberIds: params.memberIds,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+
+    await createActivityLog({
+      circleId: params.circleId,
+      memberIds: params.memberIds,
+      userId: params.createdByUid,
+      actorName: params.createdByName,
+      actorRole: params.actorRole,
+      action: `Created care task: ${params.title}`,
+      recordId: id,
+      recordType: 'task',
+      detail: `Due ${params.dueDate} at ${params.dueTime} · Priority: ${params.priority}`,
+    });
+
+    return id;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export async function updateCareTaskStatus(params: {
+  circleId: string;
+  memberIds: string[];
+  task: CareTask;
+  nextStatus: CareTaskStatus;
+  actorUid: string;
+  actorName: string;
+  actorRole: MemberRole;
+  notes?: string;
+}): Promise<void> {
+  const path = `careCircles/${params.circleId}/tasks/${params.task.id}`;
+  try {
+    const updates: Record<string, unknown> = {
+      status: params.nextStatus,
+      completedByUid: params.nextStatus === 'completed' ? params.actorUid : '',
+      completedByName: params.nextStatus === 'completed' ? clipString(params.actorName, 100) : '',
+      updatedAt: serverTimestamp(),
+    };
+    if (params.notes !== undefined) {
+      updates.notes = clipString(params.notes, 500);
+    }
+
+    await updateDoc(doc(db, 'careCircles', params.circleId, 'tasks', params.task.id), updates);
+
+    const actionVerb =
+      params.nextStatus === 'completed'
+        ? 'Completed care task'
+        : params.nextStatus === 'in_progress'
+          ? 'Started care task'
+          : 'Reopened care task';
+
+    await createActivityLog({
+      circleId: params.circleId,
+      memberIds: params.memberIds,
+      userId: params.actorUid,
+      actorName: params.actorName,
+      actorRole: params.actorRole,
+      action: `${actionVerb}: ${params.task.title}`,
+      recordId: params.task.id,
+      recordType: 'task',
+      detail: `${params.task.category} · Due ${params.task.dueDate} at ${params.task.dueTime}`,
+    });
+
+    if (params.nextStatus === 'completed') {
+      await createNotification({
+        circleId: params.circleId,
+        memberIds: params.memberIds,
+        createdByUid: params.actorUid,
+        title: `Care task completed: ${params.task.title}`,
+        detail: `${params.actorName} completed this ${params.task.category.replace('_', ' ')} task.`,
+        severity: 'info',
+        eventType: 'member',
+      });
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function deleteCareTask(params: {
+  circleId: string;
+  memberIds: string[];
+  taskId: string;
+  taskTitle: string;
+  actorUid: string;
+  actorName: string;
+  actorRole: MemberRole;
+}): Promise<void> {
+  const path = `careCircles/${params.circleId}/tasks/${params.taskId}`;
+  try {
+    await deleteDoc(doc(db, 'careCircles', params.circleId, 'tasks', params.taskId));
+    await createActivityLog({
+      circleId: params.circleId,
+      memberIds: params.memberIds,
+      userId: params.actorUid,
+      actorName: params.actorName,
+      actorRole: params.actorRole,
+      action: `Removed care task: ${params.taskTitle}`,
+      recordId: params.taskId,
+      recordType: 'task',
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
   }
 }
 
@@ -1171,6 +1710,18 @@ export async function sendCareMessage(params: {
       urgent: params.urgent,
       memberIds: params.memberIds,
       createdAt: serverTimestamp(),
+    });
+
+    await createActivityLog({
+      circleId: params.circleId,
+      memberIds: params.memberIds,
+      userId: params.senderUid,
+      actorName: params.senderName,
+      actorRole: params.senderRole,
+      action: params.urgent ? 'Posted urgent care note' : `Added ${params.category.replace('_', ' ')} care note`,
+      recordId: id,
+      recordType: 'message',
+      detail: clipString(params.body, 200),
     });
 
     if (params.urgent) {
