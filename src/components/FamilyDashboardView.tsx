@@ -148,10 +148,11 @@ export function FamilyDashboardView({ onNavigate }: FamilyDashboardViewProps) {
   const todayStats = useMemo(() => {
     const total = todayDoses.length;
     const taken = todayDoses.filter((d) => d.log?.status === 'taken').length;
+    const missed = todayDoses.filter((d) => d.log?.status === 'missed').length;
     const overdue = todayDoses.filter((d) => d.isOverdue).length;
     const skipped = todayDoses.filter((d) => d.log?.status === 'skipped').length;
     const pct = total > 0 ? Math.round((taken / total) * 100) : 0;
-    return { total, taken, overdue, skipped, pct };
+    return { total, taken, missed, overdue, skipped, pct };
   }, [todayDoses]);
 
   const chartSeries: AdherencePoint[] = useMemo(() => {
@@ -164,7 +165,7 @@ export function FamilyDashboardView({ onNavigate }: FamilyDashboardViewProps) {
       const dk = getOffsetDateKey(-i);
       const dayLogs = medicationLogs.filter((l) => l.dateKey === dk);
       const taken = dayLogs.filter((l) => l.status === 'taken').length;
-      const skipped = dayLogs.filter((l) => l.status === 'skipped').length;
+      const skipped = dayLogs.filter((l) => l.status === 'skipped' || l.status === 'missed').length;
       const expected = Math.max(expectedPerDay, taken + skipped);
       const pct = expected > 0 ? Math.min(100, Math.round((taken / expected) * 100)) : 0;
       const [y, m, d] = dk.split('-').map(Number);
@@ -203,7 +204,7 @@ export function FamilyDashboardView({ onNavigate }: FamilyDashboardViewProps) {
 
   const emergencyContact = activeCircle.emergencyContact || '';
   const emergencyHref = extractPhoneHref(emergencyContact);
-  const attentionCount = todayStats.overdue + todayStats.skipped;
+  const attentionCount = todayStats.overdue + todayStats.skipped + todayStats.missed;
 
   const handleLogDose = async (
     med: Medication,
@@ -564,18 +565,20 @@ export function FamilyDashboardView({ onNavigate }: FamilyDashboardViewProps) {
                           variant={
                             status === 'taken'
                               ? 'success'
-                              : status === 'skipped' || slot.isOverdue
+                              : status === 'missed' || status === 'skipped' || slot.isOverdue
                                 ? 'danger'
                                 : 'neutral'
                           }
                           label={
                             status === 'taken'
                               ? 'Taken'
-                              : status === 'skipped'
-                                ? 'Skipped'
-                                : slot.isOverdue
-                                  ? 'Overdue'
-                                  : 'Pending'
+                              : status === 'missed'
+                                ? 'Missed'
+                                : status === 'skipped'
+                                  ? 'Skipped'
+                                  : slot.isOverdue
+                                    ? 'Overdue'
+                                    : 'Pending'
                           }
                         />
                       </div>

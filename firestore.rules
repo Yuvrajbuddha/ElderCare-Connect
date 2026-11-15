@@ -86,7 +86,7 @@ service cloud.firestore {
     // -------------------------------------------------------------------------
     function isValidUserProfile(data, userId) {
       return data.keys().hasAll(['uid', 'displayName', 'email', 'accountType', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'displayName', 'email', 'accountType', 'phone', 'emergencyContact', 'activeCircleId', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'email', 'accountType', 'phone', 'emergencyContact', 'activeCircleId', 'medicationEmailReminders', 'appointmentEmailReminders', 'timeZone', 'createdAt', 'updatedAt'])
         && data.uid == userId
         && isValidId(data.uid)
         && isValidString(data.displayName, 1, 100)
@@ -95,6 +95,9 @@ service cloud.firestore {
         && (!('phone' in data) || isValidOptString(data.phone, 40))
         && (!('emergencyContact' in data) || isValidOptString(data.emergencyContact, 160))
         && (!('activeCircleId' in data) || isValidOptString(data.activeCircleId, 128))
+        && (!('medicationEmailReminders' in data) || data.medicationEmailReminders is bool)
+        && (!('appointmentEmailReminders' in data) || data.appointmentEmailReminders is bool)
+        && (!('timeZone' in data) || isValidOptString(data.timeZone, 80))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -160,7 +163,7 @@ service cloud.firestore {
 
     function isValidCircleMember(data, circleId, memberUid) {
       return data.keys().hasAll(['uid', 'circleId', 'displayName', 'email', 'memberRole', 'relation', 'isCoordinator', 'permissions', 'inviteCodeUsed', 'submittedPasscodeHash', 'joinedAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'circleId', 'displayName', 'email', 'memberRole', 'relation', 'isCoordinator', 'permissions', 'inviteCodeUsed', 'submittedPasscodeHash', 'joinedAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'circleId', 'displayName', 'email', 'memberRole', 'relation', 'isCoordinator', 'permissions', 'inviteCodeUsed', 'submittedPasscodeHash', 'medicationEmailReminders', 'appointmentEmailReminders', 'joinedAt', 'updatedAt'])
         && data.uid == memberUid
         && data.circleId == circleId
         && isValidId(data.uid)
@@ -173,6 +176,8 @@ service cloud.firestore {
         && isValidPermissions(data.permissions)
         && isValidOptString(data.inviteCodeUsed, 20)
         && isValidOptString(data.submittedPasscodeHash, 64)
+        && (!('medicationEmailReminders' in data) || data.medicationEmailReminders is bool)
+        && (!('appointmentEmailReminders' in data) || data.appointmentEmailReminders is bool)
         && data.joinedAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -212,7 +217,7 @@ service cloud.firestore {
         && isValidString(data.dosage, 1, 80)
         && isValidDateKey(data.dateKey)
         && isValidString(data.scheduledTime, 4, 10)
-        && data.status in ['taken', 'skipped', 'pending']
+        && data.status in ['taken', 'skipped', 'pending', 'missed']
         && (!('assistanceMode' in data) || data.assistanceMode in ['administered', 'assisted', 'self'])
         && (!('notes' in data) || isValidOptString(data.notes, 300))
         && isValidId(data.loggedByUid)
@@ -381,6 +386,32 @@ service cloud.firestore {
         && data.timestamp is timestamp;
     }
 
+    function isValidEmailReminder(data, circleId, deliveryId) {
+      return data.keys().hasAll(['id', 'circleId', 'reminderType', 'targetId', 'recipientUid', 'recipientEmail', 'recipientName', 'subject', 'status', 'provider', 'attempts', 'createdByUid', 'memberIds', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'circleId', 'reminderType', 'targetId', 'dateKey', 'scheduledTime', 'recipientUid', 'recipientEmail', 'recipientName', 'subject', 'status', 'provider', 'providerMessageId', 'errorMessage', 'attempts', 'createdByUid', 'memberIds', 'createdAt', 'updatedAt'])
+        && data.id == deliveryId
+        && data.circleId == circleId
+        && isValidId(data.id)
+        && isValidId(data.circleId)
+        && data.reminderType in ['medication_due', 'medication_missed', 'appointment_24h', 'appointment_2h', 'test_email']
+        && isValidString(data.targetId, 1, 128)
+        && (!('dateKey' in data) || isValidOptString(data.dateKey, 10))
+        && (!('scheduledTime' in data) || isValidOptString(data.scheduledTime, 10))
+        && isValidId(data.recipientUid)
+        && isValidString(data.recipientEmail, 3, 160)
+        && isValidString(data.recipientName, 1, 100)
+        && isValidString(data.subject, 1, 200)
+        && data.status in ['sent', 'failed']
+        && data.provider in ['resend', 'smtp', 'unconfigured']
+        && (!('providerMessageId' in data) || isValidOptString(data.providerMessageId, 200))
+        && (!('errorMessage' in data) || isValidOptString(data.errorMessage, 500))
+        && data.attempts is number && data.attempts >= 1 && data.attempts <= 20
+        && isValidId(data.createdByUid)
+        && isBoundedMemberList(data.memberIds)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     // -------------------------------------------------------------------------
     // Collection Rules
     // -------------------------------------------------------------------------
@@ -401,7 +432,7 @@ service cloud.firestore {
         && incoming().email == existing().email
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'phone', 'emergencyContact', 'activeCircleId', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'phone', 'emergencyContact', 'activeCircleId', 'medicationEmailReminders', 'appointmentEmailReminders', 'timeZone', 'updatedAt']);
       allow delete: if false;
     }
 
@@ -553,12 +584,12 @@ service cloud.firestore {
           && incoming().joinedAt == existing().joinedAt
           && incoming().updatedAt == request.time
           && (
-            // Member updates own display name or relation (cannot escalate role or permissions)
+            // Member updates own display name, relation, or email notification preferences (cannot escalate role or permissions)
             (memberUid == request.auth.uid
               && incoming().isCoordinator == existing().isCoordinator
               && incoming().memberRole == existing().memberRole
               && incoming().permissions == existing().permissions
-              && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'relation', 'updatedAt']))
+              && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'relation', 'medicationEmailReminders', 'appointmentEmailReminders', 'updatedAt']))
             ||
             // Elderly Owner manages individual permissions and relation
             (isCircleOwner(circleId)
@@ -896,6 +927,38 @@ service cloud.firestore {
           && (isCircleOwner(circleId) || incoming().memberIds == get(/databases/$(database)/documents/careCircles/$(circleId)).data.memberIds)
           && incoming().diff(existing()).affectedKeys().hasOnly(['memberIds']);
         allow delete: if isValidId(circleId) && isValidId(logId) && isCircleOwner(circleId);
+      }
+
+      // 3l. Email Reminder Delivery History & Deduplication
+      match /emailReminders/{deliveryId} {
+        allow get: if isValidId(circleId) && isValidId(deliveryId) && isCircleMember(circleId);
+        allow list: if isVerified() && request.auth.uid in resource.data.memberIds;
+        allow create: if isValidId(circleId)
+          && isValidId(deliveryId)
+          && isVerified()
+          && isValidEmailReminder(incoming(), circleId, deliveryId)
+          && isCircleMember(circleId)
+          && incoming().createdByUid == request.auth.uid
+          && request.auth.uid in incoming().memberIds
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isValidId(circleId)
+          && isValidId(deliveryId)
+          && isVerified()
+          && isValidEmailReminder(incoming(), circleId, deliveryId)
+          && isCircleMember(circleId)
+          && incoming().id == existing().id
+          && incoming().circleId == existing().circleId
+          && incoming().createdByUid == existing().createdByUid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            (incoming().diff(existing()).affectedKeys().hasOnly(['status', 'provider', 'providerMessageId', 'errorMessage', 'attempts', 'subject', 'updatedAt']))
+            ||
+            ((isCircleOwner(circleId) || incoming().memberIds == get(/databases/$(database)/documents/careCircles/$(circleId)).data.memberIds)
+              && incoming().diff(existing()).affectedKeys().hasOnly(['memberIds', 'updatedAt']))
+          );
+        allow delete: if isValidId(circleId) && isValidId(deliveryId) && isCircleOwner(circleId);
       }
     }
   }

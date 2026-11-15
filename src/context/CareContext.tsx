@@ -18,6 +18,7 @@ import {
   fetchCircleMembers,
   listOwnerInvitations,
   listPendingInvitesForEmail,
+  syncReminderSession,
   syncSubcollectionMemberIds,
   updateUserProfile,
 } from '../services/careService';
@@ -32,6 +33,7 @@ import {
   CareTask,
   CircleInvite,
   CircleMember,
+  EmailReminderDelivery,
   HealthRecord,
   Medication,
   MedicationLog,
@@ -73,6 +75,7 @@ interface CareContextValue {
   ownerInvitations: CircleInvite[];
   refreshPendingInvites: () => Promise<void>;
   refreshOwnerInvitations: () => Promise<void>;
+  refreshCircleMembers: () => Promise<void>;
   medications: Medication[];
   medicationLogs: MedicationLog[];
   appointments: Appointment[];
@@ -83,6 +86,7 @@ interface CareContextValue {
   activityLogs: CareActivityLog[];
   messages: CareMessage[];
   notifications: CareNotification[];
+  emailReminders: EmailReminderDelivery[];
   unreadNotificationCount: number;
   toasts: ToastItem[];
   pushToast: (type: ToastItem['type'], message: string) => void;
@@ -140,6 +144,7 @@ export function CareProvider({ children }: { children: React.ReactNode }) {
   const [activityLogs, setActivityLogs] = useState<CareActivityLog[]>([]);
   const [messages, setMessages] = useState<CareMessage[]>([]);
   const [notifications, setNotifications] = useState<CareNotification[]>([]);
+  const [emailReminders, setEmailReminders] = useState<EmailReminderDelivery[]>([]);
 
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const lastSyncedSignatureRef = useRef<string>('');
@@ -259,6 +264,9 @@ export function CareProvider({ children }: { children: React.ReactNode }) {
       setLiveSelfLoadedCircleId('');
       setPendingInvitesForMe([]);
       setOwnerInvitations([]);
+      setMessages([]);
+      setNotifications([]);
+      setEmailReminders([]);
       setActiveCircleId('');
       pushToast('info', 'Signed out securely from CareConnect AI.');
     } catch (error) {
@@ -436,6 +444,19 @@ export function CareProvider({ children }: { children: React.ReactNode }) {
   // 5. Fetch Care Circle Members by circle.memberIds
   const memberIdsSignature = activeCircle ? [...activeCircle.memberIds].sort().join(',') : '';
 
+  const refreshCircleMembers = useCallback(async () => {
+    if (!authReady || !firebaseUser || !emailVerified || !activeCircle) {
+      setMembers([]);
+      return;
+    }
+    try {
+      const loaded = await fetchCircleMembers(activeCircle.id, activeCircle.memberIds);
+      setMembers(loaded);
+    } catch (error) {
+      pushToast('error', parseReadableError(error));
+    }
+  }, [authReady, firebaseUser, emailVerified, activeCircle, pushToast]);
+
   useEffect(() => {
     if (!authReady || !firebaseUser || !emailVerified || !activeCircle) {
       setMembers([]);
@@ -452,7 +473,7 @@ export function CareProvider({ children }: { children: React.ReactNode }) {
       });
 
     const sig = `${activeCircle.id}:${memberIdsSignature}`;
-    if (lastSyncedSignatureRef.current !== sig && activeCircle.memberIds.length > 1) {
+    if (lastSyncedSignatureRef.current !== sig && (isCircleOwner || activeCircle.memberIds.length > 1)) {
       lastSyncedSignatureRef.current = sig;
       void syncSubcollectionMemberIds(activeCircle.id, activeCircle.memberIds, firebaseUser.uid).catch(() => {});
     }
@@ -460,7 +481,7 @@ export function CareProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [authReady, firebaseUser, emailVerified, activeCircle, memberIdsSignature, pushToast]);
+  }, [authReady, firebaseUser, emailVerified, activeCircle, isCircleOwner, memberIdsSignature, pushToast]);
 
   // 5b. Real-time permission listener on current user's member document
   useEffect(() => {
@@ -544,6 +565,7 @@ export function CareProvider({ children }: { children: React.ReactNode }) {
       setActivityLogs([]);
       setMessages([]);
       setNotifications([]);
+      setEmailReminders([]);
       setActiveCircleDataLoading(false);
       setActiveCircleDataError(null);
       return;
@@ -559,7 +581,7 @@ export function CareProvider({ children }: { children: React.ReactNode }) {
     const circleId = activeCircle.id;
     const uid = firebaseUser.uid;
     const expectedListeners =
-      6 + (canSubscribeMeds ? 2 : 0) + (canSubscribeAppts ? 1 : 0) + (canSubscribeRecords ? 1 : 0);
+      7 + (canSubscribeMeds ? 2 : 0) + (canSubscribeAppts ? 1 : 0) + (canSubscribeRecords ? 1 : 0);
     let settledCount = 0;
     const markSettled = () => {
       settledCount += 1;
@@ -724,6 +746,20 @@ export function CareProvider({ children }: { children: React.ReactNode }) {
       },
     );
 
+    const unsubEmailReminders = onSnapshot(
+      query(collection(db, 'careCircles', circleId, 'emailReminders'), where('memberIds', 'array-contains', uid)),
+      (snap) => {
+        const items = snap.docs.map((d) => d.data() as EmailReminderDelivery);
+        items.sort((a, b) => (b.updatedAt?.toMillis?.() ?? b.createdAt?.toMillis?.() ?? Date.now()) - (a.updatedAt?.toMillis?.() ?? a.createdAt?.toMillis?.() ?? Date.now()));
+        setEmailReminders(items);
+        markSettled();
+      },
+      (err) => {
+        markSettled();
+        handleFirestoreError(err, OperationType.LIST, `careCircles/${circleId}/emailReminders`);
+      },
+    );
+
     return () => {
       unsubMeds?.();
       unsubMedLogs?.();
@@ -735,6 +771,7 @@ export function CareProvider({ children }: { children: React.ReactNode }) {
       unsubNotifs();
       unsubTasks();
       unsubActivityLogs();
+      unsubEmailReminders();
     };
   }, [
     authReady,
@@ -746,6 +783,17 @@ export function CareProvider({ children }: { children: React.ReactNode }) {
     canSubscribeAppts,
     canSubscribeRecords,
   ]);
+
+  // 7. Keep backend node-cron reminder scheduler synced with active circle session
+  useEffect(() => {
+    if (!authReady || !firebaseUser || !emailVerified || !activeCircle) return;
+    const circleId = activeCircle.id;
+    void syncReminderSession(circleId, true).catch(() => {});
+    const timer = window.setInterval(() => {
+      void syncReminderSession(circleId, false).catch(() => {});
+    }, 4 * 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, [authReady, firebaseUser, emailVerified, activeCircle?.id, medications.length, appointments.length]);
 
   const visibleNotifications = useMemo(() => {
     return notifications.filter((n) => {
@@ -797,6 +845,7 @@ export function CareProvider({ children }: { children: React.ReactNode }) {
     ownerInvitations,
     refreshPendingInvites,
     refreshOwnerInvitations,
+    refreshCircleMembers,
     medications,
     medicationLogs,
     appointments,
@@ -807,6 +856,7 @@ export function CareProvider({ children }: { children: React.ReactNode }) {
     activityLogs: visibleActivityLogs,
     messages,
     notifications: visibleNotifications,
+    emailReminders,
     unreadNotificationCount,
     toasts,
     pushToast,

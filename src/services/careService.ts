@@ -85,6 +85,82 @@ export const DEFAULT_PERMISSIONS_BY_ROLE: Record<'family' | 'caretaker', MemberP
   },
 };
 
+export type SimplePermissionKey = 'viewHealthcareInfo' | 'manageMedicines' | 'manageAppointments';
+
+export interface SimplePermissions {
+  viewHealthcareInfo: boolean;
+  manageMedicines: boolean;
+  manageAppointments: boolean;
+}
+
+export const SIMPLE_PERMISSION_DEFINITIONS: Array<{
+  key: SimplePermissionKey;
+  label: string;
+  description: string;
+}> = [
+  {
+    key: 'viewHealthcareInfo',
+    label: 'View healthcare information',
+    description: 'See health updates, records, and medicine schedule.',
+  },
+  {
+    key: 'manageMedicines',
+    label: 'Manage medicines',
+    description: 'Add medicines and mark daily doses as taken.',
+  },
+  {
+    key: 'manageAppointments',
+    label: 'Manage appointments',
+    description: 'Add, update, or cancel doctor appointments.',
+  },
+];
+
+export const DEFAULT_SIMPLE_PERMISSIONS_BY_ROLE: Record<'family' | 'caretaker', SimplePermissions> = {
+  family: {
+    viewHealthcareInfo: true,
+    manageMedicines: false,
+    manageAppointments: true,
+  },
+  caretaker: {
+    viewHealthcareInfo: true,
+    manageMedicines: true,
+    manageAppointments: true,
+  },
+};
+
+export function toSimplePermissions(perms?: MemberPermissions): SimplePermissions {
+  if (!perms) {
+    return { ...DEFAULT_SIMPLE_PERMISSIONS_BY_ROLE.family };
+  }
+  return {
+    viewHealthcareInfo: Boolean(perms.viewHealthInfo || perms.viewAdherenceReports),
+    manageMedicines: Boolean(perms.addMedications || perms.editMedications),
+    manageAppointments: Boolean(perms.manageAppointments),
+  };
+}
+
+export function fromSimplePermissions(simple: SimplePermissions): MemberPermissions {
+  return {
+    viewHealthInfo: simple.viewHealthcareInfo,
+    viewAdherenceReports: simple.viewHealthcareInfo,
+    viewMedications: simple.viewHealthcareInfo || simple.manageMedicines,
+    addMedications: simple.manageMedicines,
+    editMedications: simple.manageMedicines,
+    manageAppointments: simple.manageAppointments,
+  };
+}
+
+export function summarizeSimplePermissions(perms?: MemberPermissions): string[] {
+  const simple = toSimplePermissions(perms);
+  return SIMPLE_PERMISSION_DEFINITIONS.filter((p) => simple[p.key]).map((p) => p.label);
+}
+
+export function formatMemberRoleLabel(role: MemberRole): string {
+  if (role === 'patient') return 'elderly user';
+  if (role === 'caretaker') return 'caretaker';
+  return 'family member';
+}
+
 export const PERMISSION_DEFINITIONS: Array<{
   key: PermissionKey;
   label: string;
@@ -132,6 +208,14 @@ export async function hashInvitePasscode(inviteCode: string, passcode: string): 
     .join('');
 }
 
+function getBrowserTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Los_Angeles';
+  } catch {
+    return 'America/Los_Angeles';
+  }
+}
+
 export async function createUserProfile(params: {
   uid: string;
   displayName: string;
@@ -150,6 +234,9 @@ export async function createUserProfile(params: {
       phone: clipString(params.phone, 40),
       emergencyContact: clipString(params.emergencyContact, 160),
       activeCircleId: '',
+      medicationEmailReminders: true,
+      appointmentEmailReminders: true,
+      timeZone: clipString(getBrowserTimeZone(), 80),
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
@@ -160,7 +247,18 @@ export async function createUserProfile(params: {
 
 export async function updateUserProfile(
   uid: string,
-  updates: Partial<Pick<UserProfile, 'displayName' | 'phone' | 'emergencyContact' | 'activeCircleId'>>,
+  updates: Partial<
+    Pick<
+      UserProfile,
+      | 'displayName'
+      | 'phone'
+      | 'emergencyContact'
+      | 'activeCircleId'
+      | 'medicationEmailReminders'
+      | 'appointmentEmailReminders'
+      | 'timeZone'
+    >
+  >,
 ): Promise<void> {
   const path = `users/${uid}`;
   try {
@@ -169,7 +267,42 @@ export async function updateUserProfile(
     if (updates.phone !== undefined) payload.phone = clipString(updates.phone, 40);
     if (updates.emergencyContact !== undefined) payload.emergencyContact = clipString(updates.emergencyContact, 160);
     if (updates.activeCircleId !== undefined) payload.activeCircleId = clipString(updates.activeCircleId, 128);
+    if (updates.medicationEmailReminders !== undefined) {
+      payload.medicationEmailReminders = Boolean(updates.medicationEmailReminders);
+    }
+    if (updates.appointmentEmailReminders !== undefined) {
+      payload.appointmentEmailReminders = Boolean(updates.appointmentEmailReminders);
+    }
+    if (updates.timeZone !== undefined) payload.timeZone = clipString(updates.timeZone, 80);
     await updateDoc(doc(db, 'users', uid), payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+export async function updateEmailReminderPreferences(params: {
+  uid: string;
+  circleIds: string[];
+  medicationEmailReminders: boolean;
+  appointmentEmailReminders: boolean;
+}): Promise<void> {
+  const path = `users/${params.uid}`;
+  try {
+    const batch = writeBatch(db);
+    batch.update(doc(db, 'users', params.uid), {
+      medicationEmailReminders: params.medicationEmailReminders,
+      appointmentEmailReminders: params.appointmentEmailReminders,
+      timeZone: clipString(getBrowserTimeZone(), 80),
+      updatedAt: serverTimestamp(),
+    });
+    for (const circleId of params.circleIds) {
+      batch.update(doc(db, 'careCircles', circleId, 'members', params.uid), {
+        medicationEmailReminders: params.medicationEmailReminders,
+        appointmentEmailReminders: params.appointmentEmailReminders,
+        updatedAt: serverTimestamp(),
+      });
+    }
+    await batch.commit();
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -220,6 +353,8 @@ export async function createCareCircle(params: {
       permissions: ALL_PERMISSIONS_TRUE,
       inviteCodeUsed: '',
       submittedPasscodeHash: '',
+      medicationEmailReminders: true,
+      appointmentEmailReminders: true,
       joinedAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
@@ -489,6 +624,8 @@ export async function acceptInvitationWithPasscode(params: {
       permissions: invite.permissions,
       inviteCodeUsed: invite.inviteCode,
       submittedPasscodeHash,
+      medicationEmailReminders: true,
+      appointmentEmailReminders: true,
       joinedAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
@@ -597,6 +734,7 @@ export async function syncSubcollectionMemberIds(circleId: string, memberIds: st
     'notifications',
     'tasks',
     'activityLogs',
+    'emailReminders',
   ] as const;
 
   const sortedTarget = [...memberIds].sort().join(',');
@@ -774,7 +912,7 @@ export async function createMedication(params: {
       userId: params.createdByUid,
       actorName: params.actorName || 'Care Member',
       actorRole: params.actorRole ?? 'patient',
-      action: `Added medication: ${params.name} (${params.dosage})`,
+      action: `Medicine added: ${params.name} (${params.dosage})`,
       recordId: id,
       recordType: 'medication',
       detail: `${params.frequency} · Times: ${params.scheduledTimes.slice(0, 6).join(', ')}`,
@@ -835,7 +973,7 @@ export async function updateMedication(
         userId: actorMeta.uid,
         actorName: actorMeta.name,
         actorRole: actorMeta.role,
-        action: `Updated medication schedule: ${updates.name}`,
+        action: `Medicine updated: ${updates.name}`,
         recordId: medicationId,
         recordType: 'medication',
         detail: `${updates.frequency} · Status: ${updates.status}`,
@@ -932,13 +1070,13 @@ export async function logMedicationDose(params: {
     const actionText =
       params.status === 'taken'
         ? resolvedMode === 'administered'
-          ? `Administered ${params.medication.name} (${params.medication.dosage})`
+          ? `Medicine given: ${params.medication.name} (${params.medication.dosage})`
           : resolvedMode === 'assisted'
-            ? `Assisted dose: ${params.medication.name} (${params.medication.dosage})`
-            : `Marked ${params.medication.name} (${params.medication.dosage}) as taken`
+            ? `Medicine assisted: ${params.medication.name} (${params.medication.dosage})`
+            : `Medicine confirmed: ${params.medication.name} (${params.medication.dosage})`
         : params.status === 'skipped'
-          ? `Recorded skipped dose: ${params.medication.name} (${params.medication.dosage})`
-          : `Reset ${params.medication.name} (${params.medication.dosage}) dose to pending`;
+          ? `Medicine skipped: ${params.medication.name} (${params.medication.dosage})`
+          : `Medicine reset to pending: ${params.medication.name} (${params.medication.dosage})`;
 
     await createActivityLog({
       circleId: params.circleId,
@@ -1046,7 +1184,7 @@ export async function createAppointment(params: {
       userId: params.createdByUid,
       actorName: params.createdByName,
       actorRole: params.actorRole ?? 'patient',
-      action: `Scheduled appointment: ${params.title}`,
+      action: `Appointment added: ${params.title}`,
       recordId: id,
       recordType: 'appointment',
       detail: `With ${params.doctorName} on ${params.appointmentDate} at ${params.appointmentTime}`,
@@ -1129,10 +1267,10 @@ export async function updateAppointment(
         actorRole: notificationMeta.actorRole ?? 'patient',
         action:
           updates.status === 'completed'
-            ? `Completed appointment: ${updates.title}`
+            ? `Appointment completed: ${updates.title}`
             : updates.status === 'cancelled'
-              ? `Cancelled appointment: ${updates.title}`
-              : `Updated appointment: ${updates.title}`,
+              ? `Appointment cancelled: ${updates.title}`
+              : `Appointment updated: ${updates.title}`,
         recordId: appointmentId,
         recordType: 'appointment',
         detail: `${updates.doctorName} · ${updates.appointmentDate}${updates.outcomeNotes ? ` · ${updates.outcomeNotes}` : ''}`,
@@ -1947,4 +2085,78 @@ export async function seedStarterCareData(params: {
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
+}
+
+// -----------------------------------------------------------------------------
+// Automatic Email Reminder Sync & Verification
+// -----------------------------------------------------------------------------
+export interface ReminderServiceStatus {
+  configured: boolean;
+  provider: 'resend' | 'smtp' | 'unconfigured';
+  gracePeriodMinutes: number;
+  schedulerActive: boolean;
+}
+
+export async function fetchReminderServiceStatus(): Promise<ReminderServiceStatus> {
+  const user = auth.currentUser;
+  if (!user) {
+    throw new Error('Please sign in first.');
+  }
+  const idToken = await user.getIdToken();
+  const response = await fetch('/api/reminders/status', {
+    headers: { Authorization: `Bearer ${idToken}` },
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || 'Unable to check email reminder service status.');
+  }
+  return data as ReminderServiceStatus;
+}
+
+export async function syncReminderSession(circleId: string, runNow = true): Promise<void> {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified || !circleId) return;
+  const idToken = await user.getIdToken();
+  const response = await fetch('/api/reminders/sync', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${idToken}`,
+    },
+    body: JSON.stringify({
+      circleId,
+      timeZone: getBrowserTimeZone(),
+      runNow,
+    }),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || 'Unable to sync email reminders.');
+  }
+}
+
+export async function sendTestReminderEmailRequest(circleId: string): Promise<{
+  ok: boolean;
+  provider: string;
+  messageId?: string;
+  deliveryId?: string;
+}> {
+  const user = auth.currentUser;
+  if (!user) {
+    throw new Error('Please sign in with a verified email account first.');
+  }
+  const idToken = await user.getIdToken(true);
+  const response = await fetch('/api/reminders/test-email', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${idToken}`,
+    },
+    body: JSON.stringify({ circleId }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.ok) {
+    throw new Error(data.error || 'Failed to deliver test reminder email.');
+  }
+  return data;
 }

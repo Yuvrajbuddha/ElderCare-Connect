@@ -21,11 +21,13 @@ import {
   parseReadableError,
 } from '../lib/utils';
 import {
+  formatMemberRoleLabel,
   logMedicationDose,
   seedStarterCareData,
   sendCareMessage,
 } from '../services/careService';
 import type { AppSection, Appointment, Medication, MedicationLog } from '../types/healthcare';
+import { CareAssistantPanel } from './CareAssistantPanel';
 import { Modal } from './ui/Modal';
 
 interface ElderlyDashboardViewProps {
@@ -459,6 +461,7 @@ export function ElderlyDashboardView({ onNavigate }: ElderlyDashboardViewProps) 
                 {todaySlots.slice(0, 4).map((slot) => {
                   const isTaken = slot.log?.status === 'taken';
                   const isSkipped = slot.log?.status === 'skipped';
+                  const isMissed = slot.log?.status === 'missed';
                   return (
                     <li
                       key={slot.key}
@@ -476,12 +479,14 @@ export function ElderlyDashboardView({ onNavigate }: ElderlyDashboardViewProps) 
                         className={`min-h-[40px] shrink-0 rounded-xl px-3.5 text-sm font-bold ${
                           isTaken
                             ? 'bg-[#ECFDF5] text-[#065F46]'
-                            : isSkipped
-                              ? 'bg-amber-50 text-[#B45309]'
-                              : 'border border-[#D1D5DB] bg-white text-[#1F2937] hover:bg-[#F3F4F6]'
+                            : isMissed
+                              ? 'bg-red-50 text-[#B91C1C]'
+                              : isSkipped
+                                ? 'bg-amber-50 text-[#B45309]'
+                                : 'border border-[#D1D5DB] bg-white text-[#1F2937] hover:bg-[#F3F4F6]'
                         }`}
                       >
-                        {isTaken ? 'Taken' : isSkipped ? 'Skipped' : 'View'}
+                        {isTaken ? 'Taken' : isMissed ? 'Missed' : isSkipped ? 'Skipped' : 'View'}
                       </button>
                     </li>
                   );
@@ -537,6 +542,9 @@ export function ElderlyDashboardView({ onNavigate }: ElderlyDashboardViewProps) 
           )}
         </section>
       </div>
+
+      {/* 3b. Simple Care Routine Assistant */}
+      <CareAssistantPanel />
 
       {/* 4. Need Help? & Family Activity */}
       <section className="rounded-2xl border border-[#E5E7EB] bg-white p-6">
@@ -758,8 +766,8 @@ export function ElderlyDashboardView({ onNavigate }: ElderlyDashboardViewProps) 
                 <p className="text-base font-semibold text-[#1F2937]">{act.action}</p>
                 {act.detail && <p className="mt-0.5 text-sm text-[#4B5563]">{act.detail}</p>}
                 <p className="mt-1 text-sm text-[#6B7280]">
-                  By <span className="font-semibold text-[#065F46]">{act.actorName}</span> ·{' '}
-                  {formatTimestampRelative(act.timestamp)}
+                  By <span className="font-semibold text-[#065F46]">{act.actorName}</span> (
+                  {formatMemberRoleLabel(act.actorRole)}) · {formatTimestampRelative(act.timestamp)}
                 </p>
               </li>
             ))}

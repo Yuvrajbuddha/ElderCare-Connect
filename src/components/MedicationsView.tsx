@@ -372,16 +372,20 @@ export function MedicationsView() {
                         variant={
                           doseStatus === 'taken'
                             ? 'success'
-                            : doseStatus === 'skipped'
-                              ? 'warning'
-                              : 'neutral'
+                            : doseStatus === 'missed'
+                              ? 'danger'
+                              : doseStatus === 'skipped'
+                                ? 'warning'
+                                : 'neutral'
                         }
                         label={
                           doseStatus === 'taken'
                             ? 'Taken'
-                            : doseStatus === 'skipped'
-                              ? 'Skipped'
-                              : 'Due'
+                            : doseStatus === 'missed'
+                              ? 'Missed'
+                              : doseStatus === 'skipped'
+                                ? 'Skipped'
+                                : 'Due'
                         }
                       />
                       {slot.log && (

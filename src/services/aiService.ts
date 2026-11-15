@@ -2,6 +2,7 @@ import { auth } from '../lib/firebase';
 import type {
   Appointment,
   AppointmentPrepResponse,
+  CareAssistantResponse,
   CareMessage,
   CareSummaryResponse,
   HealthRecord,
@@ -63,4 +64,19 @@ export function fetchCareSummary(params: {
   recentMessages: CareMessage[];
 }): Promise<CareSummaryResponse> {
   return postAiJson<CareSummaryResponse>('/api/ai/care-summary', params);
+}
+
+export function askCareAssistant(params: {
+  circleId: string;
+  message: string;
+  history: Array<{ role: 'user' | 'assistant'; text: string }>;
+}): Promise<CareAssistantResponse> {
+  const timeZone =
+    typeof Intl !== 'undefined'
+      ? Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Los_Angeles'
+      : 'America/Los_Angeles';
+  return postAiJson<CareAssistantResponse>('/api/ai/assistant', {
+    ...params,
+    timeZone,
+  });
 }

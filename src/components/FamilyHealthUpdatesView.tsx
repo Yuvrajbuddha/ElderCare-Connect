@@ -67,7 +67,7 @@ export function FamilyHealthUpdatesView() {
   const [sendingNote, setSendingNote] = useState(false);
 
   // History filter
-  const [historyFilter, setHistoryFilter] = useState<'all' | 'taken' | 'skipped'>('all');
+  const [historyFilter, setHistoryFilter] = useState<'all' | 'taken' | 'missed' | 'skipped'>('all');
   const [historySearch, setHistorySearch] = useState('');
 
   const canViewHealth = can('viewHealthInfo');
@@ -410,7 +410,7 @@ export function FamilyHealthUpdatesView() {
             {canViewMeds && (
               <div className="flex flex-wrap items-center gap-3">
                 <div className="inline-flex rounded-lg bg-[#F3F4F6] p-1">
-                  {(['all', 'taken', 'skipped'] as const).map((f) => (
+                  {(['all', 'taken', 'missed', 'skipped'] as const).map((f) => (
                     <button
                       key={f}
                       type="button"
@@ -477,11 +477,19 @@ export function FamilyHealthUpdatesView() {
                           variant={
                             log.status === 'taken'
                               ? 'success'
-                              : log.status === 'skipped'
+                              : log.status === 'missed' || log.status === 'skipped'
                                 ? 'danger'
                                 : 'neutral'
                           }
-                          label={log.status === 'taken' ? 'Taken' : log.status === 'skipped' ? 'Skipped' : 'Pending'}
+                          label={
+                            log.status === 'taken'
+                              ? 'Taken'
+                              : log.status === 'missed'
+                                ? 'Missed'
+                                : log.status === 'skipped'
+                                  ? 'Skipped'
+                                  : 'Pending'
+                          }
                         />
                       </td>
                       <td className="px-6 py-3.5 text-[#374151]">{log.loggedByName}</td>

@@ -12,10 +12,10 @@ import {
 import { useCare } from '../context/CareContext';
 import { parseReadableError } from '../lib/utils';
 import {
-  PERMISSION_DEFINITIONS,
   acceptInvitationWithPasscode,
   createCareCircle,
   createUserProfile,
+  summarizeSimplePermissions,
 } from '../services/careService';
 import type { AccountType } from '../types/healthcare';
 
@@ -454,7 +454,7 @@ export function OnboardingView() {
                         <p className="mt-0.5 text-xs text-[#4B5563]">
                           Invited by {inv.ownerName} as <span className="capitalize">{inv.invitedRole}</span> (
                           {inv.relation}) ·{' '}
-                          {PERMISSION_DEFINITIONS.filter((p) => inv.permissions[p.key]).length} permissions granted
+                          {summarizeSimplePermissions(inv.permissions).join(', ') || 'Limited access'}
                         </p>
                         <p className="mt-1 inline-flex items-center gap-1 font-mono text-xs text-[#065F46]">
                           <Clock className="h-3 w-3" />

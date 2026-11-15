@@ -3,7 +3,7 @@ import type { Timestamp } from 'firebase/firestore';
 export type AccountType = 'elderly' | 'family' | 'caretaker';
 export type MemberRole = 'patient' | 'family' | 'caretaker';
 export type MedicationStatus = 'active' | 'paused' | 'completed';
-export type DoseStatus = 'taken' | 'skipped' | 'pending';
+export type DoseStatus = 'taken' | 'skipped' | 'pending' | 'missed';
 export type MedicationAssistanceMode = 'administered' | 'assisted' | 'self';
 export type VisitType = 'in_person' | 'telehealth' | 'home_visit';
 export type AppointmentStatus = 'scheduled' | 'completed' | 'cancelled';
@@ -67,6 +67,9 @@ export interface UserProfile {
   phone?: string;
   emergencyContact?: string;
   activeCircleId?: string;
+  medicationEmailReminders?: boolean;
+  appointmentEmailReminders?: boolean;
+  timeZone?: string;
   createdAt?: Timestamp;
   updatedAt?: Timestamp;
 }
@@ -128,6 +131,8 @@ export interface CircleMember {
   permissions: MemberPermissions;
   inviteCodeUsed: string;
   submittedPasscodeHash?: string;
+  medicationEmailReminders?: boolean;
+  appointmentEmailReminders?: boolean;
   joinedAt?: Timestamp;
   updatedAt?: Timestamp;
 }
@@ -295,6 +300,38 @@ export interface CareActivityLog {
   timestamp?: Timestamp;
 }
 
+export type EmailReminderType =
+  | 'medication_due'
+  | 'medication_missed'
+  | 'appointment_24h'
+  | 'appointment_2h'
+  | 'test_email';
+
+export type EmailDeliveryStatus = 'sent' | 'failed';
+export type EmailProviderName = 'resend' | 'smtp' | 'unconfigured';
+
+export interface EmailReminderDelivery {
+  id: string;
+  circleId: string;
+  reminderType: EmailReminderType;
+  targetId: string;
+  dateKey?: string;
+  scheduledTime?: string;
+  recipientUid: string;
+  recipientEmail: string;
+  recipientName: string;
+  subject: string;
+  status: EmailDeliveryStatus;
+  provider: EmailProviderName;
+  providerMessageId?: string;
+  errorMessage?: string;
+  attempts: number;
+  createdByUid: string;
+  memberIds: string[];
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+}
+
 export interface MedicationGuideResponse {
   dailyOverview: string;
   timeBlocks: Array<{
@@ -319,6 +356,23 @@ export interface CareSummaryResponse {
   attentionItems: string[];
   nextActions: string[];
   disclaimer: string;
+}
+
+export interface CareAssistantMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  timestamp: string;
+}
+
+export interface CareAssistantResponse {
+  reply: string;
+  generatedAt: string;
+  permissionsUsed: {
+    viewMedications: boolean;
+    viewAppointments: boolean;
+    viewHealthInfo: boolean;
+  };
 }
 
 export type AppSection =

@@ -426,16 +426,24 @@ export function CaretakerDashboardView({ onNavigate }: CaretakerDashboardViewPro
                       <div className="mt-1 flex flex-wrap items-center gap-2">
                         <StatusText
                           variant={
-                            status === 'taken' ? 'success' : status === 'skipped' ? 'warning' : 'neutral'
+                            status === 'taken'
+                              ? 'success'
+                              : status === 'missed'
+                                ? 'danger'
+                                : status === 'skipped'
+                                  ? 'warning'
+                                  : 'neutral'
                           }
                           label={
                             status === 'taken'
                               ? slot.log?.assistanceMode === 'assisted'
                                 ? 'Assisted'
                                 : 'Taken'
-                              : status === 'skipped'
-                                ? 'Skipped'
-                                : 'Pending'
+                              : status === 'missed'
+                                ? 'Missed'
+                                : status === 'skipped'
+                                  ? 'Skipped'
+                                  : 'Pending'
                           }
                         />
                         {slot.med.instructions && (
@@ -551,6 +559,7 @@ export function CaretakerDashboardView({ onNavigate }: CaretakerDashboardViewPro
                 >
                   <option value="taken">Taken</option>
                   <option value="skipped">Skipped</option>
+                  <option value="missed">Missed</option>
                   <option value="pending">Pending</option>
                 </select>
               </div>

@@ -12,9 +12,10 @@ import {
 import { useCare } from '../context/CareContext';
 import { parseReadableError } from '../lib/utils';
 import {
-  PERMISSION_DEFINITIONS,
+  SIMPLE_PERMISSION_DEFINITIONS,
   acceptInvitationWithPasscode,
   createUserProfile,
+  toSimplePermissions,
   verifyInvitationWithServer,
 } from '../services/careService';
 import type { CircleInvite, MemberPermissions } from '../types/healthcare';
@@ -69,7 +70,13 @@ export function AcceptInviteView({ onNavigate }: AcceptInviteViewProps) {
     }
     return '';
   });
-  const [passcode, setPasscode] = useState('');
+  const [passcode, setPasscode] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      return (params.get('p') || '').toUpperCase();
+    }
+    return '';
+  });
   const [relationOverride, setRelationOverride] = useState('');
   const [displayNameInput, setDisplayNameInput] = useState(
     profile?.displayName || firebaseUser?.displayName || '',
@@ -478,30 +485,33 @@ export function AcceptInviteView({ onNavigate }: AcceptInviteViewProps) {
                 </span>
               </div>
 
-              <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {PERMISSION_DEFINITIONS.map((perm) => {
-                  const granted = verifiedPreview.permissions[perm.key];
-                  return (
-                    <div
-                      key={perm.key}
-                      className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-xs ${
-                        granted
-                          ? 'border-emerald-200 bg-white text-[#1F2937]'
-                          : 'border-[#E5E7EB] bg-[#F3F4F6] text-[#6B7280]'
-                      }`}
-                    >
-                      <CheckCircle2
-                        className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${
-                          granted ? 'text-[#065F46]' : 'text-[#9CA3AF]'
+              <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                {(() => {
+                  const simplePerms = toSimplePermissions(verifiedPreview.permissions);
+                  return SIMPLE_PERMISSION_DEFINITIONS.map((perm) => {
+                    const granted = simplePerms[perm.key];
+                    return (
+                      <div
+                        key={perm.key}
+                        className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-xs ${
+                          granted
+                            ? 'border-emerald-200 bg-white text-[#1F2937]'
+                            : 'border-[#E5E7EB] bg-[#F3F4F6] text-[#6B7280]'
                         }`}
-                      />
-                      <div>
-                        <p className="font-semibold">{perm.label}</p>
-                        <p className="text-[11px]">{granted ? 'Granted' : 'Restricted'}</p>
+                      >
+                        <CheckCircle2
+                          className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${
+                            granted ? 'text-[#065F46]' : 'text-[#9CA3AF]'
+                          }`}
+                        />
+                        <div>
+                          <p className="font-semibold">{perm.label}</p>
+                          <p className="text-[11px]">{granted ? 'Granted' : 'Restricted'}</p>
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  });
+                })()}
               </div>
             </div>
           )}

@@ -5,6 +5,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
+import { runCareAssistant, type AssistantHistoryTurn } from './server/careAssistant.js';
+import { getEmailProviderStatus } from './server/emailService.js';
+import {
+  getGracePeriodMinutes,
+  isReminderSchedulerActive,
+  processCircleReminders,
+  registerCircleSession,
+  sendTestReminderEmail,
+  startReminderScheduler,
+} from './server/reminderScheduler.js';
 
 dotenv.config();
 
@@ -74,6 +84,7 @@ interface VerifiedCaller {
   emailVerified: boolean;
   name: string;
   idToken: string;
+  expMs: number;
 }
 
 async function verifyFirebaseBearerToken(req: Request): Promise<VerifiedCaller> {
@@ -154,6 +165,7 @@ async function verifyFirebaseBearerToken(req: Request): Promise<VerifiedCaller> 
     emailVerified,
     name: typeof payload.name === 'string' ? payload.name : '',
     idToken,
+    expMs: exp * 1000,
   };
 }
 
@@ -616,6 +628,159 @@ async function startServer() {
     }
   });
 
+  app.post('/api/ai/assistant', async (req: Request, res: Response) => {
+    try {
+      const caller = await verifyFirebaseBearerToken(req);
+      const circleId = String(req.body?.circleId || '').trim();
+      const message = String(req.body?.message || '').trim();
+      const timeZone = String(req.body?.timeZone || 'America/Los_Angeles').trim();
+      const rawHistory = Array.isArray(req.body?.history) ? req.body.history : [];
+
+      if (!/^[a-zA-Z0-9_-]{1,128}$/.test(circleId)) {
+        res.status(400).json({ error: 'A valid Care Circle ID is required.' });
+        return;
+      }
+      if (!message || message.length > 600) {
+        res.status(400).json({ error: 'Please enter a question (up to 600 characters).' });
+        return;
+      }
+
+      const history: AssistantHistoryTurn[] = rawHistory
+        .slice(-6)
+        .filter(
+          (item: unknown): item is { role: unknown; text: unknown } =>
+            Boolean(item) && typeof item === 'object',
+        )
+        .map((item: { role: unknown; text: unknown }) => ({
+          role: item.role === 'assistant' ? 'assistant' : 'user',
+          text: String(item.text || '').slice(0, 1000),
+        }));
+
+      const result = await runCareAssistant({
+        ai: getAiClient(),
+        modelName: MODEL_NAME,
+        circleId,
+        message,
+        history,
+        timeZone,
+        gracePeriodMinutes: getGracePeriodMinutes(),
+        caller: {
+          uid: caller.uid,
+          idToken: caller.idToken,
+          name: caller.name,
+        },
+      });
+
+      res.json(result);
+    } catch (error) {
+      const mapped = mapRouteError(error);
+      res.status(mapped.status).json({ error: mapped.message });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Automatic Email Reminders API (Status, Cron Session Sync, Real Test Email)
+  // ---------------------------------------------------------------------------
+  app.get('/api/reminders/status', async (req: Request, res: Response) => {
+    try {
+      await verifyFirebaseBearerToken(req);
+      const emailStatus = getEmailProviderStatus();
+      res.json({
+        configured: emailStatus.configured,
+        provider: emailStatus.provider,
+        gracePeriodMinutes: getGracePeriodMinutes(),
+        schedulerActive: isReminderSchedulerActive(),
+      });
+    } catch (error) {
+      const mapped = mapRouteError(error);
+      res.status(mapped.status).json({ error: mapped.message });
+    }
+  });
+
+  app.post('/api/reminders/sync', async (req: Request, res: Response) => {
+    try {
+      const caller = await verifyFirebaseBearerToken(req);
+      const circleId = String(req.body?.circleId || '').trim();
+      const timeZone = String(req.body?.timeZone || 'America/Los_Angeles').trim();
+      const runNow = req.body?.runNow !== false;
+
+      if (!/^[a-zA-Z0-9_-]{1,128}$/.test(circleId)) {
+        res.status(400).json({ error: 'A valid Care Circle ID is required.' });
+        return;
+      }
+
+      const circle = await fetchFirestoreDocAsCaller(`careCircles/${circleId}`, caller.idToken);
+      if (!circle) {
+        res.status(403).json({ error: 'You are not an authorized member of this Care Circle.' });
+        return;
+      }
+
+      registerCircleSession({
+        circleId,
+        idToken: caller.idToken,
+        uid: caller.uid,
+        timeZone,
+        expMs: caller.expMs,
+      });
+
+      const summary = runNow
+        ? await processCircleReminders({
+            circleId,
+            bearerToken: caller.idToken,
+            actorUid: caller.uid,
+            timeZone,
+          })
+        : null;
+
+      const emailStatus = getEmailProviderStatus();
+      res.json({
+        ok: true,
+        configured: emailStatus.configured,
+        provider: emailStatus.provider,
+        gracePeriodMinutes: getGracePeriodMinutes(),
+        summary,
+      });
+    } catch (error) {
+      const mapped = mapRouteError(error);
+      res.status(mapped.status).json({ error: mapped.message });
+    }
+  });
+
+  app.post('/api/reminders/test-email', async (req: Request, res: Response) => {
+    try {
+      const caller = await verifyFirebaseBearerToken(req);
+      const circleId = String(req.body?.circleId || '').trim();
+
+      if (!/^[a-zA-Z0-9_-]{1,128}$/.test(circleId)) {
+        res.status(400).json({ error: 'A valid Care Circle ID is required.' });
+        return;
+      }
+
+      const result = await sendTestReminderEmail({
+        circleId,
+        bearerToken: caller.idToken,
+        callerUid: caller.uid,
+        callerEmail: caller.email,
+        callerName: caller.name || caller.email.split('@')[0],
+      });
+
+      if (!result.ok) {
+        res.status(503).json({
+          ok: false,
+          provider: result.provider,
+          deliveryId: result.deliveryId,
+          error: result.error || 'Email delivery failed.',
+        });
+        return;
+      }
+
+      res.json(result);
+    } catch (error) {
+      const mapped = mapRouteError(error);
+      res.status(mapped.status).json({ error: mapped.message });
+    }
+  });
+
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
@@ -632,6 +797,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
+    startReminderScheduler();
     console.log(`CareConnect AI server listening on http://0.0.0.0:${PORT}`);
   });
 }

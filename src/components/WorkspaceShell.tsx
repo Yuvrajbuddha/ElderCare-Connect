@@ -8,6 +8,7 @@ import {
   Home,
   LogOut,
   Menu,
+  MessageCircle,
   Pill,
   Settings,
   Users,
@@ -16,6 +17,7 @@ import {
 import { useCare } from '../context/CareContext';
 import type { AccountType, AppSection } from '../types/healthcare';
 import { AppointmentsView } from './AppointmentsView';
+import { CareAssistantPanel } from './CareAssistantPanel';
 import { CareCircleView } from './CareCircleView';
 import { CaretakerDailyCareView } from './CaretakerDailyCareView';
 import { CaretakerDashboardView } from './CaretakerDashboardView';
@@ -29,6 +31,7 @@ import { MessagesView } from './MessagesView';
 import { NotificationsDrawer } from './NotificationsDrawer';
 import { RoutinesView } from './RoutinesView';
 import { SettingsView } from './SettingsView';
+import { Modal } from './ui/Modal';
 
 type NavItem = { id: AppSection; label: string; icon: typeof Home };
 
@@ -75,6 +78,7 @@ export function WorkspaceShell({ activeSection, onNavigate }: WorkspaceShellProp
   const section = activeSection ?? internalSection;
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [assistantOpen, setAssistantOpen] = useState(false);
 
   if (!profile || !activeCircle) return null;
 
@@ -270,19 +274,30 @@ export function WorkspaceShell({ activeSection, onNavigate }: WorkspaceShellProp
             </span>
           </div>
 
-          <button
-            type="button"
-            onClick={() => setNotificationsOpen(true)}
-            className="inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-[#D1D5DB] bg-white px-4 py-2 text-sm font-semibold text-[#1F2937] hover:bg-[#F3F4F6] whitespace-nowrap shrink-0"
-          >
-            <Bell className="h-4 w-4 text-[#065F46]" />
-            <span>Alerts</span>
-            {unreadNotificationCount > 0 && (
-              <span className="font-mono text-sm font-bold text-[#B91C1C] tabular-nums">
-                ({unreadNotificationCount})
-              </span>
-            )}
-          </button>
+          <div className="flex items-center gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => setAssistantOpen(true)}
+              className="inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-[#065F46]/30 bg-[#ECFDF5] px-4 py-2 text-sm font-bold text-[#065F46] hover:bg-[#D1FAE5] whitespace-nowrap"
+            >
+              <MessageCircle className="h-4 w-4" />
+              <span>Ask Assistant</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setNotificationsOpen(true)}
+              className="inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-[#D1D5DB] bg-white px-4 py-2 text-sm font-semibold text-[#1F2937] hover:bg-[#F3F4F6] whitespace-nowrap"
+            >
+              <Bell className="h-4 w-4 text-[#065F46]" />
+              <span>Alerts</span>
+              {unreadNotificationCount > 0 && (
+                <span className="font-mono text-sm font-bold text-[#B91C1C] tabular-nums">
+                  ({unreadNotificationCount})
+                </span>
+              )}
+            </button>
+          </div>
         </header>
 
         <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 sm:px-8 sm:py-8">
@@ -327,6 +342,16 @@ export function WorkspaceShell({ activeSection, onNavigate }: WorkspaceShellProp
       </div>
 
       <NotificationsDrawer open={notificationsOpen} onClose={() => setNotificationsOpen(false)} />
+
+      <Modal
+        open={assistantOpen}
+        onClose={() => setAssistantOpen(false)}
+        title="Care Routine Assistant"
+        subtitle={`Simple answers from ${activeCircle.patientName}'s saved schedule.`}
+        maxWidthClass="max-w-2xl"
+      >
+        <CareAssistantPanel compact />
+      </Modal>
     </div>
   );
 }
